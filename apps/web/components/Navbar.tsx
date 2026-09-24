@@ -10,6 +10,7 @@ import {
   KeyRound,
   Home,
   LogOut,
+  Zap,
 } from "lucide-react";
 import { signOut } from "next-auth/react";
 
@@ -23,7 +24,8 @@ export function Navbar() {
     { href: "/dashboard", label: "Dashboard", icon: BarChart3 },
     { href: "/chat", label: "Chatbot RAG", icon: MessageSquare },
     { href: "/settings/followers", label: "Followers", icon: Users },
-    { href: "/settings/apify-keys", label: "API Keys", icon: KeyRound },
+    { href: "/settings/apify-keys", label: "Apify Keys", icon: KeyRound },
+    { href: "/settings/openrouter-keys", label: "OR Keys", icon: Zap },
   ];
 
   return (

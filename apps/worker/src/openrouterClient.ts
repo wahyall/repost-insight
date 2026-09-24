@@ -1,3 +1,5 @@
+import { openRouterFetch } from "./openrouterKeyRotation";
+
 export interface EmbeddingResult {
   index: number;
   embedding: number[];
@@ -13,37 +15,30 @@ export class RateLimitError extends Error {
 }
 
 export class OpenRouterEmbeddingService {
-  private apiKey: string;
   private model: string;
   private baseUrl: string;
 
   constructor(
-    apiKey: string = process.env.OPENROUTER_API_KEY || "",
     model: string = process.env.OPENROUTER_EMBEDDING_MODEL || "liquid/lfm-2.5-embedding-350m:free",
     baseUrl: string = "https://openrouter.ai/api/v1"
   ) {
-    this.apiKey = apiKey;
     this.model = model;
     this.baseUrl = baseUrl;
   }
 
   /**
-   * Generates embeddings for an array of input strings (batch)
-   * (FR-5.2, FR-5.4)
+   * Generates embeddings for an array of input strings (batch).
+   * Otomatis round-robin key jika kena rate limit (FR-5.2, FR-5.4).
    */
   async generateEmbeddings(texts: string[]): Promise<EmbeddingResult[]> {
-    const key = this.apiKey || process.env.OPENROUTER_API_KEY;
-    if (!key) {
-      throw new Error("OPENROUTER_API_KEY belum disetel di file environment (.env).");
-    }
-
     if (texts.length === 0) return [];
 
     const url = `${this.baseUrl}/embeddings`;
-    const res = await fetch(url, {
+
+    // openRouterFetch otomatis rotasi key jika 429/401/403
+    const res = await openRouterFetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
         "HTTP-Referer": "https://repostinsight.local",
         "X-Title": "RepostInsight",
@@ -53,12 +48,6 @@ export class OpenRouterEmbeddingService {
         input: texts,
       }),
     });
-
-    if (res.status === 429) {
-      const retryHeader = res.headers.get("Retry-After");
-      const retrySec = retryHeader ? parseInt(retryHeader, 10) : 10;
-      throw new RateLimitError(`OpenRouter Rate Limit (HTTP 429). Coba lagi dalam ${retrySec}s.`, isNaN(retrySec) ? 10 : retrySec);
-    }
 
     if (!res.ok) {
       const errorText = await res.text();

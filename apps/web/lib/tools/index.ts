@@ -1,4 +1,5 @@
 import { prisma } from "@repostinsight/db";
+import { openRouterFetch } from "../openrouterKeyRotation";
 
 /**
  * Tool 1: Semantic Search via pgvector (FR-6.2)
@@ -7,43 +8,16 @@ import { prisma } from "@repostinsight/db";
 export async function executeSemanticSearch(query: string, limit: number = 5) {
   const safeLimit = Math.max(1, Math.min(15, limit));
 
-  // Generate embedding for query using OpenRouter
-  const apiKey = process.env.OPENROUTER_API_KEY;
   const embeddingModel = process.env.OPENROUTER_EMBEDDING_MODEL || "liquid/lfm-2.5-embedding-350m:free";
 
-  if (!apiKey) {
-    // If no API key configured, fallback to keyword search
-    const fallbackPosts = await prisma.post.findMany({
-      where: {
-        OR: [
-          { captionText: { contains: query, mode: "insensitive" } },
-          { hashtags: { has: query.replace(/^#/, "").toLowerCase() } },
-        ],
-      },
-      take: safeLimit,
-      select: {
-        id: true,
-        ownerUsername: true,
-        captionText: true,
-        hashtags: true,
-        likeCount: true,
-        playCount: true,
-        takenAt: true,
-      },
-    });
-
-    return {
-      source: "keyword_fallback",
-      results: fallbackPosts,
-    };
-  }
-
   try {
-    const embedRes = await fetch("https://openrouter.ai/api/v1/embeddings", {
+    // openRouterFetch otomatis round-robin key jika rate limit
+    const embedRes = await openRouterFetch("https://openrouter.ai/api/v1/embeddings", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
+        "HTTP-Referer": "https://repostinsight.local",
+        "X-Title": "RepostInsight",
       },
       body: JSON.stringify({
         model: embeddingModel,

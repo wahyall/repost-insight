@@ -6,6 +6,7 @@ import {
   executeQueryAggregate,
   executeRenderChart,
 } from "@/lib/tools";
+import { openRouterFetch } from "@/lib/openrouterKeyRotation";
 
 export const dynamic = "force-dynamic";
 
@@ -189,7 +190,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Pesan tidak boleh kosong" }, { status: 400 });
     }
 
-    const apiKey = process.env.OPENROUTER_API_KEY;
     const model = process.env.OPENROUTER_CHAT_MODEL || "openrouter/free";
 
     // 1. Save user message to DB (FR-6.5)
@@ -199,21 +199,6 @@ export async function POST(req: NextRequest) {
         content: userMessage,
       },
     });
-
-    // If no API key configured, provide fallback
-    if (!apiKey) {
-      const fallbackReply =
-        "OPENROUTER_API_KEY belum disetel pada file `.env`. Silakan masukkan API Key Anda.";
-      await prisma.chatMessage.create({
-        data: {
-          role: "assistant",
-          content: fallbackReply,
-        },
-      });
-      return NextResponse.json({
-        reply: fallbackReply,
-      });
-    }
 
     // 2. Fetch recent conversation history (exclude any broken raw tool tags from previous bugs)
     const rawHistory = await prisma.chatMessage.findMany({
@@ -255,10 +240,10 @@ Tugas Anda:
     while (currentStep < maxSteps) {
       currentStep++;
 
-      const chatRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      // openRouterFetch otomatis round-robin key jika rate limit (429) atau invalid (401/403)
+      const chatRes = await openRouterFetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
           "HTTP-Referer": "https://repostinsight.local",
           "X-Title": "RepostInsight",
