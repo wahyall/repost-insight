@@ -1,0 +1,87 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Follower {
+  username      String        @id
+  status        String        @default("pending") // pending/in_progress/done/failed
+  apifyRunId    String?       @map("apify_run_id")
+  lastScrapedAt DateTime?     @map("last_scraped_at")
+  retryCount    Int           @default(0) @map("retry_count")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  repostEvents  RepostEvent[]
+
+  @@map("followers")
+}
+
+model Post {
+  id              String        @id
+  code            String?
+  ownerUsername   String?       @map("owner_username")
+  captionText     String?       @map("caption_text")
+  hashtags        String[]
+  mediaType       String?       @map("media_type")
+  likeCount       Int?          @map("like_count")
+  playCount       Int?          @map("play_count")
+  takenAt         DateTime?     @map("taken_at")
+  rawJson         Json?         @map("raw_json")
+  embeddingStatus String        @default("pending") @map("embedding_status")
+  firstSeenAt     DateTime      @default(now()) @map("first_seen_at")
+  lastUpdatedAt   DateTime      @default(now()) @updatedAt @map("last_updated_at")
+  repostEvents    RepostEvent[]
+
+  @@map("posts")
+}
+
+model RepostEvent {
+  id               Int      @id @default(autoincrement())
+  followerUsername String   @map("follower_username")
+  postId           String   @map("post_id")
+  scrapedAt        DateTime @default(now()) @map("scraped_at")
+  follower         Follower @relation(fields: [followerUsername], references: [username])
+  post             Post     @relation(fields: [postId], references: [id])
+
+  @@unique([followerUsername, postId])
+  @@index([postId])
+  @@index([followerUsername])
+  @@map("repost_events")
+}
+
+model ApifyApiKey {
+  id                 Int       @id @default(autoincrement())
+  label              String?
+  token              String
+  status             String    @default("active") // active/exhausted/invalid
+  monthlyUsageUsd    Decimal?  @map("monthly_usage_usd")
+  maxMonthlyUsageUsd Decimal?  @map("max_monthly_usage_usd")
+  usageCycleEndsAt   DateTime? @map("usage_cycle_ends_at")
+  lastCheckedAt      DateTime? @map("last_checked_at")
+  lastUsedAt         DateTime? @map("last_used_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+
+  @@map("apify_api_keys")
+}
+
+model ScrapeControl {
+  id             Int     @id @default(1)
+  isPaused       Boolean @default(false) @map("is_paused")
+  pauseReason    String? @map("pause_reason")
+  maxConcurrency Int     @default(3) @map("max_concurrency")
+
+  @@map("scrape_control")
+}
+
+model ChatMessage {
+  id        Int      @id @default(autoincrement())
+  role      String
+  content   String?
+  toolCalls Json?    @map("tool_calls")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("chat_messages")
+}

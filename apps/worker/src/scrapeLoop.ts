@@ -1,0 +1,308 @@
+import { prisma } from "@repostinsight/db";
+import { RepostApifyService, ApifyActorItem } from "./apifyClient";
+import { getNextActiveApifyKey, handleKeyError } from "./keyRotation";
+
+const MAX_RETRY = 3;
+const LOOP_POLL_INTERVAL_MS = 5000;
+
+export function extractHashtags(caption: string | null | undefined): string[] {
+  if (!caption) return [];
+  const matches = caption.match(/#([\w\u0590-\u05ff_]+)/g);
+  if (!matches) return [];
+  return Array.from(new Set(matches.map((h) => h.replace(/^#/, "").toLowerCase())));
+}
+
+/**
+ * Persists scraped posts and repost events into Postgres with find-or-create logic
+ * (FR-4.1–4.4)
+ */
+export async function saveScrapedReposts(followerUsername: string, items: ApifyActorItem[]) {
+  for (const item of items) {
+    const postId = (item.postId || item.id || "").toString().trim();
+    if (!postId) continue;
+
+    const code = (item.shortCode || item.code || null)?.toString() || null;
+    const ownerUsername =
+      (item.originalAuthor || item.original_author || item.owner_username || null)?.toString() || null;
+    const captionText = (item.caption || null)?.toString() || null;
+    const hashtags = extractHashtags(captionText);
+    const mediaType = (item.postType || item.media_type || null)?.toString() || null;
+    const likeCount = typeof item.likeCount === "number" ? item.likeCount : typeof item.like_count === "number" ? item.like_count : null;
+    const playCount = typeof item.playCount === "number" ? item.playCount : typeof item.play_count === "number" ? item.play_count : null;
+    
+    let takenAt: Date | null = null;
+    const rawTakenAt = item.takenAt || item.taken_at;
+    if (rawTakenAt) {
+      const parsedDate = new Date(rawTakenAt);
+      if (!isNaN(parsedDate.getTime())) takenAt = parsedDate;
+    }
+
+    // 1. Upsert Post
+    await prisma.post.upsert({
+      where: { id: postId },
+      create: {
+        id: postId,
+        code,
+        ownerUsername,
+        captionText,
+        hashtags,
+        mediaType,
+        likeCount,
+        playCount,
+        takenAt,
+        rawJson: item as object,
+        embeddingStatus: "pending",
+      },
+      update: {
+        code: code ?? undefined,
+        ownerUsername: ownerUsername ?? undefined,
+        captionText: captionText ?? undefined,
+        hashtags: hashtags.length > 0 ? hashtags : undefined,
+        mediaType: mediaType ?? undefined,
+        likeCount: likeCount ?? undefined,
+        playCount: playCount ?? undefined,
+        rawJson: item as object,
+      },
+    });
+
+    // 2. Upsert RepostEvent (unique on follower_username, post_id)
+    await prisma.repostEvent.upsert({
+      where: {
+        followerUsername_postId: {
+          followerUsername,
+          postId,
+        },
+      },
+      create: {
+        followerUsername,
+        postId,
+        scrapedAt: new Date(),
+      },
+      update: {
+        scrapedAt: new Date(),
+      },
+    });
+  }
+}
+
+/**
+ * Reconciles in_progress followers upon worker startup (FR-2.3)
+ */
+export async function reconcileInProgressFollowers(getService: () => Promise<RepostApifyService | null>) {
+  console.log("[Reconcile] Memeriksa follower berstatus in_progress...");
+  const inProgressFollowers = await prisma.follower.findMany({
+    where: {
+      status: "in_progress",
+      apifyRunId: { not: null },
+    },
+  });
+
+  if (inProgressFollowers.length === 0) {
+    console.log("[Reconcile] Tidak ada follower in_progress yang menggantung.");
+    return;
+  }
+
+  console.log(`[Reconcile] Ditemukan ${inProgressFollowers.length} follower in_progress. Melakukan rekonsiliasi...`);
+
+  for (const follower of inProgressFollowers) {
+    try {
+      const apifyService = await getService();
+      if (!apifyService) {
+        console.warn("[Reconcile] Tidak ada API service aktif, menunda rekonsiliasi.");
+        break;
+      }
+
+      const runStatus = await apifyService.getRunStatus(follower.apifyRunId!);
+      console.log(`[Reconcile] @${follower.username} (runId: ${follower.apifyRunId}): Status Apify adalah ${runStatus.status}`);
+
+      if (runStatus.status === "SUCCEEDED" && runStatus.datasetId) {
+        const items = await apifyService.getDatasetItems(runStatus.datasetId);
+        await saveScrapedReposts(follower.username, items);
+        await prisma.follower.update({
+          where: { username: follower.username },
+          data: {
+            status: "done",
+            lastScrapedAt: new Date(),
+          },
+        });
+        console.log(`[Reconcile] @${follower.username} selesai direkonsiliasi -> done (${items.length} repost).`);
+      } else if (
+        runStatus.status === "FAILED" ||
+        runStatus.status === "ABORTED" ||
+        runStatus.status === "TIMED-OUT"
+      ) {
+        const newRetryCount = follower.retryCount + 1;
+        const newStatus = newRetryCount >= MAX_RETRY ? "failed" : "pending";
+        await prisma.follower.update({
+          where: { username: follower.username },
+          data: {
+            status: newStatus,
+            retryCount: newRetryCount,
+          },
+        });
+        console.log(`[Reconcile] @${follower.username} run gagal (${runStatus.status}) -> ${newStatus} (retry: ${newRetryCount}/${MAX_RETRY})`);
+      } else {
+        // RUNNING or READY - Biarkan in_progress, akan dipantau oleh loop
+        console.log(`[Reconcile] @${follower.username} masih berjalan di server Apify.`);
+      }
+    } catch (err) {
+      console.error(`[Reconcile] Gagal merekonsiliasi @${follower.username}:`, err);
+    }
+  }
+}
+
+/**
+ * Main scraping loop
+ */
+export async function startScrapeLoop(
+  getService: () => Promise<RepostApifyService | null>,
+  shouldStopRef: { stop: boolean }
+) {
+  console.log("[ScrapeLoop] Memulai worker scraping...");
+
+  // 1. Startup reconciliation (FR-2.3)
+  await reconcileInProgressFollowers(getService);
+
+  while (!shouldStopRef.stop) {
+    try {
+      // 2. Check scrape control (FR-2.4, FR-2.5)
+      const control = await prisma.scrapeControl.findUnique({
+        where: { id: 1 },
+      });
+
+      if (control?.isPaused) {
+        // Sedang dijeda oleh user atau sistem
+        await new Promise((resolve) => setTimeout(resolve, LOOP_POLL_INTERVAL_MS));
+        continue;
+      }
+
+      const maxConcurrency = control?.maxConcurrency || 3;
+
+      // 3. Monitor active runs
+      const activeFollowers = await prisma.follower.findMany({
+        where: {
+          status: "in_progress",
+          apifyRunId: { not: null },
+        },
+      });
+
+      const apifyService = await getService();
+      if (!apifyService) {
+        console.warn("[ScrapeLoop] Tidak ada Apify API Key yang aktif. Menjeda proses...");
+        await prisma.scrapeControl.update({
+          where: { id: 1 },
+          data: { isPaused: true, pauseReason: "no_active_apify_keys" },
+        });
+        await new Promise((resolve) => setTimeout(resolve, LOOP_POLL_INTERVAL_MS));
+        continue;
+      }
+
+      // Check status of each active run
+      for (const follower of activeFollowers) {
+        try {
+          const runStatus = await apifyService.getRunStatus(follower.apifyRunId!);
+
+          if (runStatus.status === "SUCCEEDED" && runStatus.datasetId) {
+            const items = await apifyService.getDatasetItems(runStatus.datasetId);
+            await saveScrapedReposts(follower.username, items);
+            await prisma.follower.update({
+              where: { username: follower.username },
+              data: {
+                status: "done",
+                lastScrapedAt: new Date(),
+              },
+            });
+            console.log(`[ScrapeLoop] Selesai: @${follower.username} -> done (${items.length} repost tersimpan).`);
+          } else if (
+            runStatus.status === "FAILED" ||
+            runStatus.status === "ABORTED" ||
+            runStatus.status === "TIMED-OUT"
+          ) {
+            const newRetryCount = follower.retryCount + 1;
+            const newStatus = newRetryCount >= MAX_RETRY ? "failed" : "pending";
+            await prisma.follower.update({
+              where: { username: follower.username },
+              data: {
+                status: newStatus,
+                retryCount: newRetryCount,
+              },
+            });
+            console.log(`[ScrapeLoop] Run gagal untuk @${follower.username} -> status: ${newStatus}, retry: ${newRetryCount}/${MAX_RETRY}`);
+          }
+        } catch (checkErr) {
+          console.error(`[ScrapeLoop] Gagal mengecek status run @${follower.username}:`, checkErr);
+        }
+      }
+
+      // 4. Calculate available concurrency slots
+      const currentInProgressCount = await prisma.follower.count({
+        where: { status: "in_progress" },
+      });
+
+      const availableSlots = maxConcurrency - currentInProgressCount;
+
+      if (availableSlots > 0) {
+        // Ambil batch follower pending terlama
+        const pendingFollowers = await prisma.follower.findMany({
+          where: { status: "pending" },
+          take: availableSlots,
+          orderBy: [{ retryCount: "asc" }, { createdAt: "asc" }],
+        });
+
+        for (const follower of pendingFollowers) {
+          const keyInfo = await getNextActiveApifyKey();
+          if (!keyInfo) {
+            console.warn("[ScrapeLoop] Tidak ada API Key yang dapat digunakan untuk dispatch. Menunda batch...");
+            break;
+          }
+
+          try {
+            console.log(`[ScrapeLoop] Memulai dispatch scraping untuk @${follower.username} (Key #${keyInfo.keyId})...`);
+            const run = await keyInfo.service.startScrapeRun(follower.username);
+
+            await prisma.follower.update({
+              where: { username: follower.username },
+              data: {
+                status: "in_progress",
+                apifyRunId: run.runId,
+              },
+            });
+
+            console.log(`[ScrapeLoop] Dispatched @${follower.username}, Run ID: ${run.runId}`);
+          } catch (dispatchErr: unknown) {
+            console.error(`[ScrapeLoop] Gagal dispatch run untuk @${follower.username}:`, dispatchErr);
+            const { rotated, isPaymentRequired } = await handleKeyError(keyInfo.keyId, dispatchErr);
+
+            if (rotated && isPaymentRequired) {
+              // FR-3.4: Segera coba ulang follower ini dengan key aktif berikutnya
+              console.log(`[ScrapeLoop] Mencoba ulang @${follower.username} dengan key alternatif...`);
+              const altKey = await getNextActiveApifyKey();
+              if (altKey) {
+                try {
+                  const altRun = await altKey.service.startScrapeRun(follower.username);
+                  await prisma.follower.update({
+                    where: { username: follower.username },
+                    data: {
+                      status: "in_progress",
+                      apifyRunId: altRun.runId,
+                    },
+                  });
+                  console.log(`[ScrapeLoop] Sukses retry dengan Key #${altKey.keyId} untuk @${follower.username}`);
+                  continue;
+                } catch (altErr) {
+                  await handleKeyError(altKey.keyId, altErr);
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (loopErr) {
+      console.error("[ScrapeLoop] Kesalahan tidak terduga pada siklus scraping:", loopErr);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, LOOP_POLL_INTERVAL_MS));
+  }
+
+  console.log("[ScrapeLoop] Scraping loop telah dihentikan.");
+}

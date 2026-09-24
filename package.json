@@ -1,0 +1,18 @@
+{
+  "name": "repostinsight",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm --workspace=@repostinsight/web run dev",
+    "build": "npm --workspace=@repostinsight/web run build",
+    "start": "npm --workspace=@repostinsight/web run start",
+    "worker": "npm --workspace=@repostinsight/worker run start",
+    "db:migrate": "npm --workspace=@repostinsight/db run migrate",
+    "db:generate": "npm --workspace=@repostinsight/db run generate",
+    "db:studio": "npm --workspace=@repostinsight/db run studio"
+  }
+}

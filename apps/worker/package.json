@@ -1,0 +1,19 @@
+{
+  "name": "@repostinsight/worker",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@repostinsight/db": "*",
+    "apify-client": "^2.11.4",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  }
+}

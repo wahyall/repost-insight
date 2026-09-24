@@ -1,0 +1,20 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: repostinsight-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: repostinsight
+    ports:
+      - "5432:5432"
+    volumes:
+      - repostinsight_pgdata:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+volumes:
+  repostinsight_pgdata:

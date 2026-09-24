@@ -1,0 +1,20 @@
+{
+  "name": "@repostinsight/db",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.ts",
+  "types": "index.ts",
+  "scripts": {
+    "generate": "prisma generate",
+    "migrate": "prisma migrate dev",
+    "studio": "prisma studio"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.4.1"
+  },
+  "devDependencies": {
+    "prisma": "^6.4.1",
+    "typescript": "^5.7.3",
+    "@types/node": "^22.13.4"
+  }
+}
