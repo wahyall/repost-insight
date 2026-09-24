@@ -22,8 +22,9 @@ export async function saveScrapedReposts(followerUsername: string, items: ApifyA
     if (!postId) continue;
 
     const code = (item.shortCode || item.code || null)?.toString() || null;
+    const rawAny = item as any;
     const ownerUsername =
-      (item.user?.username || item.ownerUsername || item.originalAuthor || item.original_author || item.owner_username || item.owner?.username || null)?.toString() || null;
+      (rawAny.user?.username || rawAny.ownerUsername || rawAny.originalAuthor || rawAny.original_author || rawAny.owner_username || rawAny.owner?.username || null)?.toString() || null;
 
     let captionText: string | null = null;
     if (typeof item.caption === "string") {

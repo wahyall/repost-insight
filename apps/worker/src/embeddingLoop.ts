@@ -23,8 +23,9 @@ export function prepareEmbeddingText(captionText: string | null, hashtags: strin
   const combined = parts.join("\n\n").trim();
   if (!combined) return "";
 
-  // 512 tokens in Indonesian/English typically <= 1800 characters
-  const MAX_CHARS = 1800;
+  // Liquid LFM 350M has a strict 512 token limit.
+  // In Indonesian (compounds, affixes, hashtags), 1000 chars safely equals ~280-360 tokens.
+  const MAX_CHARS = 1000;
   if (combined.length > MAX_CHARS) {
     return combined.slice(0, MAX_CHARS);
   }
@@ -75,8 +76,43 @@ export async function startEmbeddingLoop(
       }
 
       if (validItems.length > 0) {
-        const texts = validItems.map((v) => v.text);
-        const embeddings = await embeddingService.generateEmbeddings(texts);
+        let embeddings: { index: number; embedding: number[] }[] = [];
+        try {
+          const texts = validItems.map((v) => v.text);
+          embeddings = await embeddingService.generateEmbeddings(texts);
+        } catch (batchErr: any) {
+          // Tangani secara anggun jika salah satu post melebihi batas token (HTTP 400)
+          if (
+            batchErr?.message?.includes("400") ||
+            batchErr?.message?.includes("exceeding the model maximum")
+          ) {
+            console.warn(
+              "[EmbeddingLoop] Terdeteksi post melebihi batas token dalam batch. Memproses per-item dengan pemotongan teks ekstra..."
+            );
+            embeddings = [];
+            for (let i = 0; i < validItems.length; i++) {
+              const item = validItems[i];
+              try {
+                // Potong lebih agresif ke 700 karakter
+                const safeText = item.text.slice(0, 700);
+                const singleRes = await embeddingService.generateEmbeddings([safeText]);
+                if (singleRes && singleRes[0]) {
+                  embeddings.push({ index: i, embedding: singleRes[0].embedding });
+                }
+              } catch (singleErr) {
+                console.warn(
+                  `[EmbeddingLoop] Post ${item.id} tidak dapat di-embed (ditandai 'done' agar antrean tidak macet).`
+                );
+                await prisma.post.update({
+                  where: { id: item.id },
+                  data: { embeddingStatus: "done" },
+                });
+              }
+            }
+          } else {
+            throw batchErr;
+          }
+        }
 
         // 3. Simpan vector ke pgvector di Postgres (FR-5.2)
         for (const item of embeddings) {
