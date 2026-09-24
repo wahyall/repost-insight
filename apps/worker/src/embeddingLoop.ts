@@ -6,26 +6,50 @@ const DEFAULT_LOOP_INTERVAL_MS = 6000;
 const MAX_BACKOFF_MS = 60000;
 
 /**
- * Truncates text so it doesn't exceed 512 tokens (~1500-1800 characters)
+ * Menghapus seluruh emoji, modifier, piktografik, dan flag dari teks
+ */
+export function removeEmojis(text: string): string {
+  if (!text) return "";
+  return text
+    .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\p{Emoji_Modifier}\uFE0E\uFE0F\u200D\u{1F1E6}-\u{1F1FF}]/gu, "")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter((line, i, arr) => line.length > 0 || (i > 0 && arr[i - 1].length > 0))
+    .join("\n")
+    .trim();
+}
+
+/**
+ * Filter caption, hapus emoji, dan potong teks agar tidak melebihi batas 512 token
  * (FR-5.3)
  */
 export function prepareEmbeddingText(captionText: string | null, hashtags: string[] = []): string {
   const parts: string[] = [];
-  if (captionText && captionText.trim()) {
-    parts.push(captionText.trim());
+
+  if (captionText) {
+    const cleanCaption = removeEmojis(captionText);
+    if (cleanCaption) {
+      parts.push(cleanCaption);
+    }
   }
 
   if (hashtags && hashtags.length > 0) {
-    const formattedTags = hashtags.map((h) => (h.startsWith("#") ? h : `#${h}`)).join(" ");
-    parts.push(formattedTags);
+    const formattedTags = hashtags
+      .map((h) => removeEmojis(h).replace(/^#/, "").trim().toLowerCase())
+      .filter((h) => h.length > 0)
+      .map((h) => `#${h}`)
+      .join(" ");
+    if (formattedTags) {
+      parts.push(formattedTags);
+    }
   }
 
   const combined = parts.join("\n\n").trim();
   if (!combined) return "";
 
   // Liquid LFM 350M has a strict 512 token limit.
-  // In Indonesian (compounds, affixes, hashtags), 1000 chars safely equals ~280-360 tokens.
-  const MAX_CHARS = 1000;
+  // Tanpa emoji, 800-1000 karakter teks bahasa Indonesia berada sangat aman di bawah 512 token.
+  const MAX_CHARS = 800;
   if (combined.length > MAX_CHARS) {
     return combined.slice(0, MAX_CHARS);
   }

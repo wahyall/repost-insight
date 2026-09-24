@@ -57,14 +57,16 @@ export class RepostApifyService {
    * Dispatch a new scrape run for a single Instagram follower
    * Per SRS §5: Body: { username: follower }, maxItems: 20
    */
-  async startScrapeRun(followerUsername: string): Promise<ApifyRunResult> {
+  async startScrapeRun(followerUsername: string, maxResults: number = 20): Promise<ApifyRunResult> {
     try {
       const run = await this.client.actor(this.actorId).start(
         {
           username: followerUsername,
+          maxResults,
+          max_results: maxResults,
         },
         {
-          maxItems: 20,
+          maxItems: maxResults,
         }
       );
 
