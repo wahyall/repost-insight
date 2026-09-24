@@ -32,7 +32,8 @@ export class OpenRouterEmbeddingService {
    * (FR-5.2, FR-5.4)
    */
   async generateEmbeddings(texts: string[]): Promise<EmbeddingResult[]> {
-    if (!this.apiKey) {
+    const key = this.apiKey || process.env.OPENROUTER_API_KEY;
+    if (!key) {
       throw new Error("OPENROUTER_API_KEY belum disetel di file environment (.env).");
     }
 
@@ -42,7 +43,7 @@ export class OpenRouterEmbeddingService {
     const res = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
         "HTTP-Referer": "https://repostinsight.local",
         "X-Title": "RepostInsight",
