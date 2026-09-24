@@ -104,53 +104,55 @@ generator client {
 }
 
 datasource db {
-  provider   = "postgresql"
-  url        = env("DATABASE_URL")
-  extensions = [vector]
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model Follower {
-  username      String   @id
-  status        String   @default("pending") // pending/in_progress/done/failed
-  apifyRunId    String?  @map("apify_run_id")
-  lastScrapedAt DateTime? @map("last_scraped_at")
-  retryCount    Int      @default(0) @map("retry_count")
-  createdAt     DateTime @default(now()) @map("created_at")
+  username      String        @id
+  status        String        @default("pending") // pending/in_progress/done/failed
+  apifyRunId    String?       @map("apify_run_id")
+  lastScrapedAt DateTime?     @map("last_scraped_at") @db.Timestamptz(3)
+  retryCount    Int           @default(0) @map("retry_count")
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
   repostEvents  RepostEvent[]
 
+  @@index([status])
   @@map("followers")
 }
 
 model Post {
-  id              String   @id
+  id              String                       @id
   code            String?
-  ownerUsername   String?  @map("owner_username")
-  captionText     String?  @map("caption_text")
+  ownerUsername   String?                      @map("owner_username")
+  captionText     String?                      @map("caption_text")
   hashtags        String[]
-  mediaType       String?  @map("media_type")
-  likeCount       Int?     @map("like_count")
-  playCount       Int?     @map("play_count")
-  takenAt         DateTime? @map("taken_at")
-  rawJson         Json?    @map("raw_json")
-  embeddingStatus String   @default("pending") @map("embedding_status")
-  firstSeenAt     DateTime @default(now()) @map("first_seen_at")
-  lastUpdatedAt   DateTime @default(now()) @updatedAt @map("last_updated_at")
+  mediaType       String?                      @map("media_type")
+  likeCount       Int?                         @map("like_count")
+  playCount       Int?                         @map("play_count")
+  takenAt         DateTime?                    @map("taken_at") @db.Timestamptz(3)
+  rawJson         Json?                        @map("raw_json")
+  embeddingStatus String                       @default("pending") @map("embedding_status")
+  firstSeenAt     DateTime                     @default(now()) @map("first_seen_at") @db.Timestamptz(3)
+  lastUpdatedAt   DateTime                     @default(now()) @updatedAt @map("last_updated_at") @db.Timestamptz(3)
+  embedding       Unsupported("vector(1024)")?
   repostEvents    RepostEvent[]
 
+  @@index([embeddingStatus])
   @@map("posts")
-  // kolom `embedding vector(1024)` ditambahkan lewat migration SQL manual,
-  // Prisma belum punya native type pgvector di semua versi — lihat catatan §4
 }
 
 model RepostEvent {
-  id                Int      @id @default(autoincrement())
-  followerUsername  String   @map("follower_username")
-  postId            String   @map("post_id")
-  scrapedAt         DateTime @default(now()) @map("scraped_at")
-  follower          Follower @relation(fields: [followerUsername], references: [username])
-  post              Post     @relation(fields: [postId], references: [id])
+  id               Int      @id @default(autoincrement())
+  followerUsername String   @map("follower_username")
+  postId           String   @map("post_id")
+  scrapedAt        DateTime @default(now()) @map("scraped_at") @db.Timestamptz(3)
+  follower         Follower @relation(fields: [followerUsername], references: [username])
+  post             Post     @relation(fields: [postId], references: [id])
 
   @@unique([followerUsername, postId])
+  @@index([postId])
+  @@index([followerUsername])
   @@map("repost_events")
 }
 
@@ -161,12 +163,25 @@ model ApifyApiKey {
   status             String    @default("active") // active/exhausted/invalid
   monthlyUsageUsd    Decimal?  @map("monthly_usage_usd")
   maxMonthlyUsageUsd Decimal?  @map("max_monthly_usage_usd")
-  usageCycleEndsAt   DateTime? @map("usage_cycle_ends_at")
-  lastCheckedAt      DateTime? @map("last_checked_at")
-  lastUsedAt         DateTime? @map("last_used_at")
-  createdAt          DateTime  @default(now()) @map("created_at")
+  usageCycleEndsAt   DateTime? @map("usage_cycle_ends_at") @db.Timestamptz(3)
+  lastCheckedAt      DateTime? @map("last_checked_at") @db.Timestamptz(3)
+  lastUsedAt         DateTime? @map("last_used_at") @db.Timestamptz(3)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
 
   @@map("apify_api_keys")
+}
+
+model OpenRouterApiKey {
+  id                Int       @id @default(autoincrement())
+  label             String?
+  token             String
+  status            String    @default("active") // active/rate_limited/invalid
+  rateLimitedUntil  DateTime? @map("rate_limited_until")
+  lastCheckedAt     DateTime? @map("last_checked_at")
+  lastUsedAt        DateTime? @map("last_used_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  @@map("openrouter_api_keys")
 }
 
 model ScrapeControl {
@@ -183,7 +198,7 @@ model ChatMessage {
   role      String
   content   String?
   toolCalls Json?    @map("tool_calls")
-  createdAt DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   @@map("chat_messages")
 }
