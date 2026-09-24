@@ -13,6 +13,7 @@
     "worker": "npm --workspace=@repostinsight/worker run start",
     "db:migrate": "npm --workspace=@repostinsight/db run migrate",
     "db:generate": "npm --workspace=@repostinsight/db run generate",
-    "db:studio": "npm --workspace=@repostinsight/db run studio"
+    "db:studio": "npm --workspace=@repostinsight/db run studio",
+    "db:fresh": "tsx scratch/reset_db_fresh.ts"
   }
 }
