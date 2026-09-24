@@ -9,6 +9,177 @@ import {
 
 export const dynamic = "force-dynamic";
 
+interface ExtractedToolCall {
+  id: string;
+  name: string;
+  args: any;
+}
+
+/**
+ * Extracts tool calls from either OpenAI native tool_calls
+ * OR raw text format (e.g. Cohere/Qwen/Llama XML `<tool_call>...`)
+ */
+function extractToolCalls(assistantMessage: any): ExtractedToolCall[] {
+  const calls: ExtractedToolCall[] = [];
+
+  // 1. Native OpenAI tool calls
+  if (assistantMessage?.tool_calls && Array.isArray(assistantMessage.tool_calls)) {
+    for (const c of assistantMessage.tool_calls) {
+      let args = {};
+      try {
+        args = typeof c.function?.arguments === "string" 
+          ? JSON.parse(c.function.arguments) 
+          : c.function?.arguments || {};
+      } catch {
+        args = {};
+      }
+      calls.push({
+        id: c.id || `call_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        name: c.function?.name,
+        args,
+      });
+    }
+  }
+
+  // 2. Text-based tool calls in content (e.g. Cohere or Qwen XML <tool_call>)
+  const content = assistantMessage?.content || "";
+  if (typeof content === "string" && content.includes("<tool_call>")) {
+    const regex = /<tool_call>([\s\S]*?)<\/tool_call>/gi;
+    let m;
+    while ((m = regex.exec(content)) !== null) {
+      const raw = m[1].trim();
+
+      // Check if raw is JSON
+      if (raw.startsWith("{") && raw.endsWith("}")) {
+        try {
+          const parsed = JSON.parse(raw);
+          const name = parsed.name || parsed.tool || parsed.function;
+          const args = parsed.arguments || parsed.args || parsed;
+          if (name) {
+            calls.push({
+              id: `text_call_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+              name,
+              args: typeof args === "object" ? args : {},
+            });
+            continue;
+          }
+        } catch {}
+      }
+
+      // Check Cohere format:
+      // function_name
+      // <arg_key>...</arg_key><arg_value>...</arg_value>
+      const fnMatch = raw.match(/^([a-zA-Z0-9_-]+)/);
+      const fnName = fnMatch ? fnMatch[1] : "";
+      const args: Record<string, any> = {};
+      const pairRegex = /<arg_key>([\s\S]*?)<\/arg_key>[\s\S]*?<arg_value>([\s\S]*?)<\/arg_value>/gi;
+      let pm;
+      while ((pm = pairRegex.exec(raw)) !== null) {
+        const k = pm[1].trim();
+        let v: any = pm[2].trim();
+        if (v === "true") v = true;
+        else if (v === "false") v = false;
+        else if (!isNaN(Number(v)) && v !== "") v = Number(v);
+        else {
+          try {
+            v = JSON.parse(v);
+          } catch {}
+        }
+        args[k] = v;
+      }
+
+      if (fnName) {
+        calls.push({
+          id: `text_call_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          name: fnName,
+          args,
+        });
+      }
+    }
+  }
+
+  return calls;
+}
+
+/**
+ * Strips raw tool call XML and internal tags from assistant text
+ */
+function cleanAssistantReply(text: string): string {
+  if (!text) return "";
+  let cleaned = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "").trim();
+  cleaned = cleaned.replace(/<\/?(tool_call|arg_key|arg_value)>/gi, "").trim();
+  return cleaned;
+}
+
+/**
+ * Fallback synthesizer if LLM finishes without textual explanation
+ */
+function synthesizeResponseFromTools(toolCalls: any[]): string {
+  if (!toolCalls || toolCalls.length === 0) return "Data berhasil diproses.";
+
+  const parts: string[] = [];
+  for (const tc of toolCalls) {
+    if (tc.name === "query_aggregate") {
+      const metric = tc.args?.metric;
+      if (metric === "top_accounts") {
+        const list = tc.result?.data || [];
+        if (list.length === 0) {
+          parts.push("Saat ini belum ada data akun yang di-repost.");
+        } else {
+          parts.push(
+            "Berikut adalah akun yang paling sering di-repost oleh followers:\n" +
+              list
+                .slice(0, 10)
+                .map(
+                  (a: any, i: number) =>
+                    `${i + 1}. **@${a.ownerUsername}** — ${a.repostCount} repost (${a.uniqueFollowers} follower unik)`
+                )
+                .join("\n")
+          );
+        }
+      } else if (metric === "summary") {
+        const s = tc.result?.data;
+        if (s) {
+          parts.push(
+            `Ringkasan data riset saat ini:\n- Total Follower: **${s.totalFollowers}** (Selesai: ${s.doneFollowers})\n- Total Postingan Unik: **${s.totalPosts}**\n- Total Aktivitas Repost: **${s.totalReposts}**`
+          );
+        }
+      } else if (metric === "trending_hashtags") {
+        const tags = tc.result?.data || [];
+        if (tags.length === 0) {
+          parts.push("Belum ada data hashtag yang ditemukan pada postingan repost.");
+        } else {
+          parts.push(
+            "Hashtag yang sedang tren dalam konten repost:\n" +
+              tags
+                .slice(0, 10)
+                .map((t: any, i: number) => `${i + 1}. **#${t.hashtag}** (${t.count} kali digunakan)`)
+                .join("\n")
+          );
+        }
+      }
+    } else if (tc.name === "semantic_search") {
+      const results = tc.result?.results || [];
+      if (results.length === 0) {
+        parts.push(`Tidak ditemukan postingan yang cocok dengan topik "${tc.args?.query}".`);
+      } else {
+        parts.push(
+          `Ditemukan ${results.length} postingan terkait "${tc.args?.query}":\n` +
+            results
+              .slice(0, 5)
+              .map((p: any, i: number) => {
+                const snippet = (p.captionText || "").slice(0, 140).replace(/\n/g, " ");
+                return `${i + 1}. **@${p.ownerUsername || "anonim"}**: "${snippet}..."`;
+              })
+              .join("\n")
+        );
+      }
+    }
+  }
+
+  return parts.join("\n\n") || "Data berhasil dianalisis.";
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -29,10 +200,10 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // If no API key configured, provide a helpful mock response
+    // If no API key configured, provide fallback
     if (!apiKey) {
       const fallbackReply =
-        "OPENROUTER_API_KEY belum disetel pada file `.env`. Untuk menggunakan chatbot cerdas dengan model OpenRouter gratis, silakan masukkan API Key Anda.";
+        "OPENROUTER_API_KEY belum disetel pada file `.env`. Silakan masukkan API Key Anda.";
       await prisma.chatMessage.create({
         data: {
           role: "assistant",
@@ -44,82 +215,97 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2. Fetch recent conversation history
-    const history = await prisma.chatMessage.findMany({
+    // 2. Fetch recent conversation history (exclude any broken raw tool tags from previous bugs)
+    const rawHistory = await prisma.chatMessage.findMany({
       orderBy: { createdAt: "desc" },
       take: 6,
     });
-    history.reverse();
+    rawHistory.reverse();
+
+    const history = rawHistory
+      .filter((m) => !(m.role === "assistant" && m.content?.startsWith("<tool_call>")))
+      .map((m) => ({
+        role: m.role,
+        content: cleanAssistantReply(m.content || ""),
+      }));
 
     const messagesPayload: any[] = [
       {
         role: "system",
         content: `Anda adalah RepostInsight Assistant — analis data riset repost Instagram followers @ynsurabaya.
 Tugas Anda:
-1. Menjawab pertanyaan pengguna dengan akurat, ramah, dan berbasis data nyata (Bahasa Indonesia).
-2. Jika pengguna bertanya tentang isi konten, topik postingan, narasi, atau kajian tertentu -> gunakan tool 'semantic_search'.
-3. Jika pengguna bertanya tentang peringkat, jumlah total, statistik akun paling banyak direpost, atau hashtag terpopuler -> gunakan tool 'query_aggregate'.
-4. Jika pengguna meminta grafik visual, perbandingan visual, atau chart -> setelah mengambil data dengan query_aggregate/semantic_search, panggil tool 'render_chart' untuk menampilkannya.`,
+1. Menjawab pertanyaan pengguna dengan ramah, berbasis data nyata, dan berbahasa Indonesia yang baik.
+2. Jika pengguna bertanya tentang konten, topik postingan, narasi, atau kajian -> gunakan tool 'semantic_search'.
+3. Jika pengguna bertanya tentang peringkat akun, akun paling banyak di-repost, statistik, atau hashtag -> gunakan tool 'query_aggregate'.
+4. Jika pengguna meminta grafik atau perbandingan visual -> gunakan tool 'render_chart'.
+5. Jangan pernah menampilkan tag XML internal seperti <tool_call> kepada pengguna. Berikan jawaban naratif informatif setelah menerima data dari tool.`,
       },
-      ...history.map((m) => ({
-        role: m.role,
-        content: m.content || "",
-      })),
+      ...history,
+      { role: "user", content: userMessage },
     ];
 
-    // 3. First OpenRouter call (model + tools)
-    let chatRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://repostinsight.local",
-        "X-Title": "RepostInsight",
-      },
-      body: JSON.stringify({
-        model,
-        messages: messagesPayload,
-        tools: CHATBOT_TOOLS,
-        tool_choice: "auto",
-      }),
-    });
-
-    if (!chatRes.ok) {
-      const errText = await chatRes.text();
-      throw new Error(`OpenRouter Chat API Error [${chatRes.status}]: ${errText}`);
-    }
-
-    let chatData = await chatRes.json();
-    let choice = chatData.choices?.[0];
-    let assistantMessage = choice?.message;
-
     let chartToRender: any = null;
-    let toolCallsLog: any[] = [];
+    const toolCallsLog: any[] = [];
+    let assistantMessage: any = null;
 
-    // 4. Handle tool calls if returned by LLM
-    if (assistantMessage?.tool_calls && assistantMessage.tool_calls.length > 0) {
-      messagesPayload.push(assistantMessage);
+    // Loop for tool execution (up to 2 steps)
+    let currentStep = 0;
+    const maxSteps = 2;
 
-      for (const call of assistantMessage.tool_calls) {
-        const fnName = call.function?.name;
-        let fnArgs: any = {};
-        try {
-          fnArgs = JSON.parse(call.function?.arguments || "{}");
-        } catch {
-          fnArgs = {};
-        }
+    while (currentStep < maxSteps) {
+      currentStep++;
 
+      const chatRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://repostinsight.local",
+          "X-Title": "RepostInsight",
+        },
+        body: JSON.stringify({
+          model,
+          messages: messagesPayload,
+          tools: CHATBOT_TOOLS,
+          tool_choice: "auto",
+        }),
+      });
+
+      if (!chatRes.ok) {
+        const errText = await chatRes.text();
+        throw new Error(`OpenRouter Chat API Error [${chatRes.status}]: ${errText}`);
+      }
+
+      const chatData = await chatRes.json();
+      assistantMessage = chatData.choices?.[0]?.message;
+      if (!assistantMessage) break;
+
+      const extractedCalls = extractToolCalls(assistantMessage);
+
+      // If no tool calls requested, we have our final text answer
+      if (extractedCalls.length === 0) {
+        break;
+      }
+
+      // Execute each tool
+      messagesPayload.push({
+        role: "assistant",
+        content: assistantMessage.content || null,
+        tool_calls: assistantMessage.tool_calls || undefined,
+      });
+
+      for (const call of extractedCalls) {
         let toolResult: any = null;
-        if (fnName === "semantic_search") {
-          toolResult = await executeSemanticSearch(fnArgs.query, fnArgs.limit);
-        } else if (fnName === "query_aggregate") {
-          toolResult = await executeQueryAggregate(fnArgs.metric, fnArgs.limit);
-        } else if (fnName === "render_chart") {
-          toolResult = executeRenderChart(fnArgs.chartType, fnArgs.title, fnArgs.data);
+        if (call.name === "semantic_search") {
+          toolResult = await executeSemanticSearch(call.args?.query, call.args?.limit);
+        } else if (call.name === "query_aggregate") {
+          toolResult = await executeQueryAggregate(call.args?.metric, call.args?.limit);
+        } else if (call.name === "render_chart") {
+          toolResult = executeRenderChart(call.args?.chartType, call.args?.title, call.args?.data);
           chartToRender = toolResult;
         }
 
-        toolCallsLog.push({ name: fnName, args: fnArgs, result: toolResult });
+        toolCallsLog.push({ name: call.name, args: call.args, result: toolResult });
 
         messagesPayload.push({
           role: "tool",
@@ -127,27 +313,15 @@ Tugas Anda:
           content: JSON.stringify(toolResult),
         });
       }
-
-      // Second call to get final synthesized response from LLM
-      const followUpRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          messages: messagesPayload,
-        }),
-      });
-
-      if (followUpRes.ok) {
-        const followUpData = await followUpRes.json();
-        assistantMessage = followUpData.choices?.[0]?.message || assistantMessage;
-      }
     }
 
-    const finalContent = assistantMessage?.content || "Data berhasil diproses.";
+    // Clean final response text
+    let finalContent = cleanAssistantReply(assistantMessage?.content || "");
+
+    // If the model left empty content after tool calls, generate synthesis
+    if (!finalContent) {
+      finalContent = synthesizeResponseFromTools(toolCallsLog);
+    }
 
     // 5. Save assistant reply to database
     await prisma.chatMessage.create({

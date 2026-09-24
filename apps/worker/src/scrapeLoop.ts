@@ -23,18 +23,33 @@ export async function saveScrapedReposts(followerUsername: string, items: ApifyA
 
     const code = (item.shortCode || item.code || null)?.toString() || null;
     const ownerUsername =
-      (item.originalAuthor || item.original_author || item.owner_username || null)?.toString() || null;
-    const captionText = (item.caption || null)?.toString() || null;
+      (item.user?.username || item.ownerUsername || item.originalAuthor || item.original_author || item.owner_username || item.owner?.username || null)?.toString() || null;
+
+    let captionText: string | null = null;
+    if (typeof item.caption === "string") {
+      captionText = item.caption;
+    } else if (typeof item.caption === "object" && item.caption !== null) {
+      captionText = (item.caption as any).text || null;
+    } else if (typeof item.captionText === "string") {
+      captionText = item.captionText;
+    } else if (typeof (item as any).text === "string") {
+      captionText = (item as any).text;
+    }
+
     const hashtags = extractHashtags(captionText);
-    const mediaType = (item.postType || item.media_type || null)?.toString() || null;
+    const mediaType = (item.postType || item.media_type || (item as any).media_format || null)?.toString() || null;
     const likeCount = typeof item.likeCount === "number" ? item.likeCount : typeof item.like_count === "number" ? item.like_count : null;
-    const playCount = typeof item.playCount === "number" ? item.playCount : typeof item.play_count === "number" ? item.play_count : null;
+    const playCount = typeof item.playCount === "number" ? item.playCount : typeof item.play_count === "number" ? item.play_count : typeof (item as any).view_count === "number" ? (item as any).view_count : null;
     
     let takenAt: Date | null = null;
-    const rawTakenAt = item.takenAt || item.taken_at;
+    const rawTakenAt = (item as any).takenAtDate || (item as any).taken_at_date || item.takenAt || item.taken_at;
     if (rawTakenAt) {
-      const parsedDate = new Date(rawTakenAt);
-      if (!isNaN(parsedDate.getTime())) takenAt = parsedDate;
+      if (typeof rawTakenAt === "number") {
+        takenAt = new Date(rawTakenAt > 1e11 ? rawTakenAt : rawTakenAt * 1000);
+      } else {
+        const parsedDate = new Date(rawTakenAt);
+        if (!isNaN(parsedDate.getTime())) takenAt = parsedDate;
+      }
     }
 
     // 1. Upsert Post
@@ -82,6 +97,21 @@ export async function saveScrapedReposts(followerUsername: string, items: ApifyA
         scrapedAt: new Date(),
       },
     });
+  }
+
+  // Refresh materialized views so dashboard & chatbot see new aggregates
+  try {
+    await prisma.$executeRawUnsafe(`REFRESH MATERIALIZED VIEW CONCURRENTLY mv_top_reposted_accounts;`);
+    await prisma.$executeRawUnsafe(`REFRESH MATERIALIZED VIEW CONCURRENTLY mv_trending_hashtags;`);
+    await prisma.$executeRawUnsafe(`REFRESH MATERIALIZED VIEW CONCURRENTLY mv_repost_activity_timeline;`);
+  } catch {
+    try {
+      await prisma.$executeRawUnsafe(`REFRESH MATERIALIZED VIEW mv_top_reposted_accounts;`);
+      await prisma.$executeRawUnsafe(`REFRESH MATERIALIZED VIEW mv_trending_hashtags;`);
+      await prisma.$executeRawUnsafe(`REFRESH MATERIALIZED VIEW mv_repost_activity_timeline;`);
+    } catch (err) {
+      console.warn("[ScrapeLoop] Gagal merefresh materialized views:", err);
+    }
   }
 }
 
