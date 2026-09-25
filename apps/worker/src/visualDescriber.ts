@@ -157,7 +157,8 @@ async function callVisionModel(
       }
 
       const data = await res.json();
-      const text: string = data?.choices?.[0]?.message?.content ?? "";
+      const message = data?.choices?.[0]?.message;
+      const text: string = message?.content ?? message?.reasoning ?? "";
       if (text.trim()) {
         return text.trim();
       }
@@ -201,7 +202,8 @@ async function callChatCompletion(prompt: string): Promise<string> {
   }
 
   const data = await res.json();
-  const text: string = data?.choices?.[0]?.message?.content ?? "";
+  const message = data?.choices?.[0]?.message;
+  const text: string = message?.content ?? message?.reasoning ?? "";
   return text.trim();
 }
 
@@ -400,7 +402,7 @@ async function describeVideoPost(post: PostForDescribe): Promise<string> {
           { local: true },
         );
         frameDescriptions.push({ t, desc });
-        await sleep(1500); // rate-limit
+        await sleep(3000); // rate-limit OpenRouter free tier
       } catch (frameErr) {
         console.warn(
           `[VisualDescriber] Frame ${i} (t=${t.toFixed(1)}s) gagal untuk post ${post.id}:`,
@@ -427,8 +429,25 @@ async function describeVideoPost(post: PostForDescribe): Promise<string> {
       duration,
       caption,
     );
-    const combined = await callChatCompletion(combinePrompt);
-    return combined;
+    try {
+      const combined = await callChatCompletion(combinePrompt);
+      if (combined.trim()) {
+        return combined.trim();
+      }
+    } catch (combineErr: any) {
+      console.warn(
+        `[VisualDescriber] Penggabungan deskripsi chat gagal untuk post ${post.id}:`,
+        combineErr.message,
+      );
+    }
+
+    // Fallback jika callChatCompletion gagal atau kosong: gabungkan deskripsi frame langsung
+    const fallbackParts: string[] = [];
+    if (thumbnailDesc) fallbackParts.push(`Thumbnail: ${thumbnailDesc}`);
+    for (const f of frameDescriptions) {
+      fallbackParts.push(`Detik ${f.t.toFixed(1)}: ${f.desc}`);
+    }
+    return fallbackParts.join(". ");
   } finally {
     // 4. Bersihkan file sementara (FR-10.7)
     await fs.rm(videoPath, { force: true });

@@ -73,7 +73,7 @@ export async function startEmbeddingLoop(
   embeddingService: OpenRouterEmbeddingService,
   shouldStopRef: { stop: boolean }
 ) {
-  console.log("[EmbeddingLoop] Memulai loop embedding post...");
+  console.log(`[EmbeddingLoop] Memulai loop embedding post (model: ${process.env.OPENROUTER_EMBEDDING_MODEL || "nvidia/llama-nemotron-embed-vl-1b-v2:free"})...`);
   let currentBackoffMs = DEFAULT_LOOP_INTERVAL_MS;
 
   while (!shouldStopRef.stop) {

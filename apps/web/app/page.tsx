@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowRight, Database, MessageSquare, BarChart3, Settings } from "lucide-react";
+import { ArrowRight, Database, MessageSquare, BarChart3, Settings, Repeat } from "lucide-react";
 
 export default function HomePage() {
   return (
@@ -22,6 +22,12 @@ export default function HomePage() {
             Buka Dashboard <ArrowRight className="w-4 h-4" />
           </Link>
           <Link
+            href="/reposts"
+            className="inline-flex items-center gap-2 bg-amber-600 hover:bg-amber-700 text-white font-medium px-5 py-2.5 rounded-xl transition"
+          >
+            Katalog Repost <Repeat className="w-4 h-4" />
+          </Link>
+          <Link
             href="/chat"
             className="inline-flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-medium px-5 py-2.5 rounded-xl transition"
           >
@@ -29,7 +35,7 @@ export default function HomePage() {
           </Link>
           <Link
             href="/settings/followers"
-            className="inline-flex items-center gap-2 bg-amber-500 hover:bg-amber-600 text-white font-medium px-5 py-2.5 rounded-xl transition"
+            className="inline-flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-5 py-2.5 rounded-xl transition"
           >
             Import Followers <Database className="w-4 h-4" />
           </Link>
@@ -37,6 +43,13 @@ export default function HomePage() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-white p-6 rounded-xl border border-slate-200">
+          <Repeat className="w-8 h-8 text-amber-600 mb-3" />
+          <h2 className="font-semibold text-slate-900 mb-1">Katalog Repost per Akun</h2>
+          <p className="text-sm text-slate-600">
+            Jelajahi seluruh postingan repost yang dikelompokkan rapi berdasarkan masing-masing akun follower.
+          </p>
+        </div>
         <div className="bg-white p-6 rounded-xl border border-slate-200">
           <BarChart3 className="w-8 h-8 text-amber-600 mb-3" />
           <h2 className="font-semibold text-slate-900 mb-1">Agregat & Tren</h2>
@@ -49,13 +62,6 @@ export default function HomePage() {
           <h2 className="font-semibold text-slate-900 mb-1">Tanya Jawab RAG</h2>
           <p className="text-sm text-slate-600">
             Pencarian semantik konten repost dan analisis statistik otomatis via OpenRouter LLM.
-          </p>
-        </div>
-        <div className="bg-white p-6 rounded-xl border border-slate-200">
-          <Settings className="w-8 h-8 text-emerald-600 mb-3" />
-          <h2 className="font-semibold text-slate-900 mb-1">Rotasi Multi Key Apify</h2>
-          <p className="text-sm text-slate-600">
-            Mesin scraping resumable dengan rotasi multi-kunci cerdas tanpa biaya ekstra.
           </p>
         </div>
       </div>

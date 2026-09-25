@@ -5,6 +5,7 @@ import { Navbar } from "@/components/Navbar";
 export const metadata: Metadata = {
   title: "RepostInsight — Analisis Repost Instagram Followers",
   description: "Platform riset & analitik repost followers Instagram berbasis RAG",
+  referrer: "no-referrer",
 };
 
 export default function RootLayout({

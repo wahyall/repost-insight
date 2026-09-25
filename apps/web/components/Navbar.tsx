@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BarChart3,
+  Repeat,
   MessageSquare,
   Users,
   KeyRound,
@@ -22,6 +23,7 @@ export function Navbar() {
 
   const navLinks = [
     { href: "/dashboard", label: "Dashboard", icon: BarChart3 },
+    { href: "/reposts", label: "Katalog Repost", icon: Repeat },
     { href: "/chat", label: "Chatbot RAG", icon: MessageSquare },
     { href: "/settings/followers", label: "Followers", icon: Users },
     { href: "/settings/apify-keys", label: "Apify Keys", icon: KeyRound },

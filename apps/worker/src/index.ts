@@ -1,10 +1,10 @@
 import path from "path";
 import dotenv from "dotenv";
 
-// Explicitly load root .env first
+// Load worker .env first, then root .env with override so root .env takes precedence
+dotenv.config();
 const rootEnvPath = path.resolve(__dirname, "../../.env");
 dotenv.config({ path: rootEnvPath, override: true });
-dotenv.config({ override: true });
 import { prisma } from "@repostinsight/db";
 import { RepostApifyService } from "./apifyClient";
 import { startScrapeLoop } from "./scrapeLoop";

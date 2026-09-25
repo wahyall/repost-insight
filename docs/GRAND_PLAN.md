@@ -110,6 +110,17 @@ Spesifikasi lengkap: `VISUAL_DESCRIPTION.md`.
 
 **Definition of Done**: post foto & video baru otomatis punya `visual_description` yang tersimpan dan ikut ter-embed ulang, tanpa mengganggu jalannya scraping post lain saat satu post gagal diproses.
 
+## Fase 9 — Katalog Repost per Akun Follower (Effort: Sedang)
+
+- [x] Endpoint `GET /api/reposts`: query reposts yang dikelompokkan per follower dengan pagination, search (follower & konten/caption/hashtag), filter tipe media, filter status visi AI, dan sorting
+- [x] Ekstraksi aman thumbnail Instagram dari `rawJson` tanpa membebani payload jaringan
+- [x] UI Katalog Repost (`/reposts`): bento ringkasan statistik (total follower reposter, total repost, rerata repost, visi AI)
+- [x] Accordion list follower dengan badge status, jumlah repost, pratinjau kreator asal, dan tautan profil Instagram
+- [x] Grid kartu postingan responsif: thumbnail media (referrerPolicy anti-blokir), badge tipe media, likes/plays, teks caption collapsible, hashtag chips, analisis visual AI callout, dan tautan langsung ke Instagram
+- [x] Integrasi navigasi: menu baru "Katalog Repost" di `Navbar.tsx` dan kartu navigasi cepat di halaman beranda (`page.tsx`)
+
+**Definition of Done**: pengguna dapat melihat dan mencari seluruh repost yang dikelompokkan per follower secara terstruktur, cepat, dan responsif.
+
 ## Open Items / Hal yang Masih Bisa Berubah
 
 - Pilihan final CopilotKit vs Vercel AI SDK murni untuk chat UI — diputuskan saat mulai Fase 6.

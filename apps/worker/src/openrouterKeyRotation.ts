@@ -131,6 +131,7 @@ export async function openRouterFetch(
       if (rateLimitedCount > 0) {
         // Tunggu key paling cepat aktif, lalu retry loop (tidak consume attempt)
         await waitForEarliestKeyReactivation();
+        triedKeyIds.clear();
         attempt--; // jangan hitung sebagai percobaan
         continue;
       }
@@ -140,8 +141,17 @@ export async function openRouterFetch(
       );
     }
 
-    // Jika semua key sudah dicoba dan masih gagal, stop
+    // Jika semua key sudah dicoba pada putaran ini
     if (triedKeyIds.has(keyInfo.keyId)) {
+      const rateLimitedCount = await prisma.openRouterApiKey.count({
+        where: { status: "rate_limited" },
+      });
+      if (rateLimitedCount > 0) {
+        await waitForEarliestKeyReactivation();
+        triedKeyIds.clear();
+        attempt--;
+        continue;
+      }
       throw new Error("[OpenRouterKeyRotation] Semua key aktif sudah dicoba dan terkena rate limit.");
     }
     triedKeyIds.add(keyInfo.keyId);
@@ -161,7 +171,12 @@ export async function openRouterFetch(
       console.warn(
         `[OpenRouterKeyRotation] Key #${keyInfo.keyId} kena rate limit (429). Retry-After: ${retrySecSafe}s. Rotasi ke key berikutnya...`
       );
-      await markOpenRouterKeyRateLimited(keyInfo.keyId, retrySecSafe);
+      if (keyInfo.keyId === 0) {
+        await new Promise((r) => setTimeout(r, Math.min(retrySecSafe, 60) * 1000));
+        triedKeyIds.clear();
+      } else {
+        await markOpenRouterKeyRateLimited(keyInfo.keyId, retrySecSafe);
+      }
       continue; // coba key berikutnya
     }
 
