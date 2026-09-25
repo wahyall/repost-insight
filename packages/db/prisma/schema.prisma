@@ -34,7 +34,7 @@ model Post {
   embeddingStatus              String                       @default("pending") @map("embedding_status")
   firstSeenAt                  DateTime                     @default(now()) @map("first_seen_at") @db.Timestamptz(3)
   lastUpdatedAt                DateTime                     @default(now()) @updatedAt @map("last_updated_at") @db.Timestamptz(3)
-  embedding                    Unsupported("vector(2048)")?
+  embedding                    Unsupported("vector(1024)")?
   visualDescription            String?                      @map("visual_description")
   visualDescriptionStatus      String                       @default("pending") @map("visual_description_status") // pending/done/failed/skipped
   repostEvents                 RepostEvent[]

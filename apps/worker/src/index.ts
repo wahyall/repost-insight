@@ -9,7 +9,7 @@ import { prisma } from "@repostinsight/db";
 import { RepostApifyService } from "./apifyClient";
 import { startScrapeLoop } from "./scrapeLoop";
 
-import { OpenRouterEmbeddingService } from "./openrouterClient";
+import { OllamaEmbeddingService } from "./ollamaClient";
 import { startEmbeddingLoop } from "./embeddingLoop";
 
 const shouldStopRef = { stop: false };
@@ -55,7 +55,7 @@ async function main() {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  const embeddingService = new OpenRouterEmbeddingService();
+  const embeddingService = new OllamaEmbeddingService();
 
   // Run both scraping loop and embedding pipeline concurrently
   await Promise.all([

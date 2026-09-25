@@ -1,5 +1,5 @@
 import { prisma } from "@repostinsight/db";
-import { OpenRouterEmbeddingService, RateLimitError } from "./openrouterClient";
+import { OllamaEmbeddingService } from "./ollamaClient";
 
 const BATCH_SIZE = 15; // 10–20 per siklus sesuai FR-5.2 & SRS §8
 const DEFAULT_LOOP_INTERVAL_MS = 6000;
@@ -70,10 +70,10 @@ export function prepareEmbeddingText(
  * Main embedding worker loop (FR-5.1–5.4)
  */
 export async function startEmbeddingLoop(
-  embeddingService: OpenRouterEmbeddingService,
+  embeddingService: OllamaEmbeddingService,
   shouldStopRef: { stop: boolean }
 ) {
-  console.log(`[EmbeddingLoop] Memulai loop embedding post (model: ${process.env.OPENROUTER_EMBEDDING_MODEL || "nvidia/llama-nemotron-embed-vl-1b-v2:free"})...`);
+  console.log(`[EmbeddingLoop] Memulai loop embedding post (model: ${process.env.OLLAMA_EMBEDDING_MODEL || "qwen3-embedding:0.6b"})...`);
   let currentBackoffMs = DEFAULT_LOOP_INTERVAL_MS;
 
   while (!shouldStopRef.stop) {
@@ -180,17 +180,14 @@ export async function startEmbeddingLoop(
       // Berhasil, reset interval ke normal
       currentBackoffMs = DEFAULT_LOOP_INTERVAL_MS;
     } catch (err: unknown) {
-      if (err instanceof RateLimitError) {
-        // FR-5.4: Rate limit OpenRouter tier gratis -> status tetap pending, lakukan backoff
-        const waitMs = Math.max(err.retryAfterSeconds * 1000, currentBackoffMs * 2);
-        currentBackoffMs = Math.min(waitMs, MAX_BACKOFF_MS);
-        console.warn(`[EmbeddingLoop] Rate limit tercapai. Menunggu ${currentBackoffMs / 1000}s sebelum retry... (Status post tetap 'pending')`);
+      currentBackoffMs = Math.min(currentBackoffMs * 2, MAX_BACKOFF_MS);
+      const isPrismaError = (err as any)?.name?.includes("Prisma") || (err as any)?.code?.startsWith("P");
+      if (isPrismaError) {
+        console.error(`[EmbeddingLoop] Kesalahan koneksi / query database:`, err);
       } else {
-        // Error lain (jaringan, OpenRouter sementara) -> backoff tanpa merubah status menjadi failed
-        currentBackoffMs = Math.min(currentBackoffMs * 2, MAX_BACKOFF_MS);
-        console.error(`[EmbeddingLoop] Kesalahan embedding API:`, err);
-        console.warn(`[EmbeddingLoop] Menunggu ${currentBackoffMs / 1000}s sebelum retry berikutnya...`);
+        console.error(`[EmbeddingLoop] Kesalahan Ollama embedding API:`, err);
       }
+      console.warn(`[EmbeddingLoop] Menunggu ${currentBackoffMs / 1000}s sebelum retry berikutnya...`);
     }
 
     await new Promise((resolve) => setTimeout(resolve, currentBackoffMs));

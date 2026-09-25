@@ -147,7 +147,7 @@ CREATE TABLE posts (
   play_count        int,
   taken_at          timestamptz,
   raw_json          jsonb,
-  embedding         vector(2048),   -- dimensi model nvidia/llama-nemotron-embed-vl-1b-v2:free
+  embedding         vector(1024),   -- dimensi model lokal qwen3-embedding:0.6b (Ollama)
   embedding_status  text NOT NULL DEFAULT 'pending', -- pending/done
   first_seen_at     timestamptz NOT NULL DEFAULT now(),
   last_updated_at   timestamptz NOT NULL DEFAULT now(),

@@ -1,5 +1,4 @@
 import { prisma } from "@repostinsight/db";
-import { openRouterFetch } from "../openrouterKeyRotation";
 
 /**
  * Tool 1: Semantic Search via pgvector (FR-6.2)
@@ -8,20 +7,21 @@ import { openRouterFetch } from "../openrouterKeyRotation";
 export async function executeSemanticSearch(query: string, limit: number = 5) {
   const safeLimit = Math.max(1, Math.min(15, limit));
 
-  const embeddingModel = process.env.OPENROUTER_EMBEDDING_MODEL || "nvidia/llama-nemotron-embed-vl-1b-v2:free";
+  const embeddingModel = process.env.OLLAMA_EMBEDDING_MODEL || "qwen3-embedding:0.6b";
+  const baseUrl = (process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
 
   try {
-    // openRouterFetch otomatis round-robin key jika rate limit
-    const embedRes = await openRouterFetch("https://openrouter.ai/api/v1/embeddings", {
+    const embedRes = await fetch(`${baseUrl}/api/embed`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://repostinsight.local",
-        "X-Title": "RepostInsight",
       },
       body: JSON.stringify({
         model: embeddingModel,
         input: [query],
+        options: {
+          num_gpu: 0,
+        },
       }),
     });
 
@@ -30,9 +30,9 @@ export async function executeSemanticSearch(query: string, limit: number = 5) {
     }
 
     const embedJson = await embedRes.json();
-    const queryVector = embedJson.data?.[0]?.embedding;
+    const queryVector = embedJson.embeddings?.[0];
     if (!queryVector || !Array.isArray(queryVector)) {
-      throw new Error("Gagal mengekstrak embedding dari OpenRouter");
+      throw new Error("Gagal mengekstrak embedding dari Ollama");
     }
 
     const vectorStr = `[${queryVector.join(",")}]`;

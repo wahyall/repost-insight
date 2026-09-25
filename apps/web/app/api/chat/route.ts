@@ -6,7 +6,6 @@ import {
   executeQueryAggregate,
   executeRenderChart,
 } from "@/lib/tools";
-import { openRouterFetch } from "@/lib/openrouterKeyRotation";
 
 export const dynamic = "force-dynamic";
 
@@ -190,7 +189,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Pesan tidak boleh kosong" }, { status: 400 });
     }
 
-    const model = process.env.OPENROUTER_CHAT_MODEL || "openrouter/free";
+    const model = process.env.NINEROUTER_MODEL || process.env.NINEROUTER_CHAT_MODEL || "ag/gemini-3-flash";
+    const baseUrl = (process.env.NINEROUTER_BASE_URL || "http://127.0.0.1:20128/v1").replace(/\/$/, "");
+    const apiKey = process.env.NINEROUTER_API_KEY || "";
+    const endpoint = baseUrl.endsWith("/v1") ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
 
     // 1. Save user message to DB (FR-6.5)
     await prisma.chatMessage.create({
@@ -240,25 +242,28 @@ Tugas Anda:
     while (currentStep < maxSteps) {
       currentStep++;
 
-      // openRouterFetch otomatis round-robin key jika rate limit (429) atau invalid (401/403)
-      const chatRes = await openRouterFetch("https://openrouter.ai/api/v1/chat/completions", {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (apiKey) {
+        headers["Authorization"] = `Bearer ${apiKey}`;
+      }
+
+      const chatRes = await fetch(endpoint, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "HTTP-Referer": "https://repostinsight.local",
-          "X-Title": "RepostInsight",
-        },
+        headers,
         body: JSON.stringify({
           model,
           messages: messagesPayload,
           tools: CHATBOT_TOOLS,
           tool_choice: "auto",
+          stream: false,
         }),
       });
 
       if (!chatRes.ok) {
         const errText = await chatRes.text();
-        throw new Error(`OpenRouter Chat API Error [${chatRes.status}]: ${errText}`);
+        throw new Error(`9Router Chat API Error [${chatRes.status}]: ${errText}`);
       }
 
       const chatData = await chatRes.json();

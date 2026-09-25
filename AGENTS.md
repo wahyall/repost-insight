@@ -15,8 +15,8 @@ Baca dokumen berikut sebelum mulai mengerjakan apa pun — jangan berasumsi di l
 - Actor Apify `data-slayer/instagram-reposts` tidak mendukung multi-username per run; `maxItems: 20` per follower.
 - Re-scrape & re-import followers wajib pakai logic find-or-create (SRS §3 F1, F4) — tidak boleh ada duplikat, tidak boleh mereset progres yang sudah ada.
 - Worker (scraping & embedding) harus resumable: seluruh state disimpan di database, bukan di memory proses, karena laptop bisa dimatikan kapan saja. Run Apify tetap berjalan di server Apify meski laptop mati — worker cukup merekonsiliasi status saat start-up (SRS §3 FR-2.3).
-- Tidak ada Redis/BullMQ — antrean cukup berbasis kolom status di Postgres, sesuai keterbatasan RAM (8GB) dan skala single-user.
-- Embedding & chat LLM pakai model gratis OpenRouter (`liquid/lfm-2.5-embedding-350m:free` untuk embedding, `openrouter/free` atau model `:free` spesifik untuk chat) — nama model dibaca dari env/config, bukan hardcode.
+- Embedding menggunakan Ollama model lokal (`qwen3-embedding:0.6b` untuk pgvector 1024-dim offline & zero rate-limit).
+- Chatbot RAG (`/api/chat`) dan pemrosesan visual/image description (`visualDescriber.ts`) menggunakan 9Router API (`http://127.0.0.1:20128/v1`) dengan model `ag/gemini-3-flash`. Nama model, key, dan base URL dibaca dari env/config.
 - Scope produk v1 = full vision (semua fitur F1–F9 di SRS), tidak dipecah MVP vs fase berikutnya — pemecahan hanya di level urutan pengerjaan (lihat GRAND_PLAN.md).
 - Aspek legal/compliance data follower sengaja di luar cakupan proyek (keputusan sadar pemilik, lihat BRD §5) — tidak perlu diangkat ulang kecuali diminta pemilik proyek.
 - Autentikasi: login statis single-user, bukan sistem multi-akun.

@@ -5,7 +5,6 @@ import { pipeline } from "stream/promises";
 import { createWriteStream } from "fs";
 import path from "path";
 import os from "os";
-import { openRouterFetch } from "./openrouterKeyRotation";
 
 const execFileAsync = promisify(execFile);
 
@@ -35,6 +34,15 @@ function imagePrompt(caption?: string | null): string {
     `${captionContext(caption)}Deskripsikan GAMBAR postingan Instagram ini dalam 2-3 kalimat ` +
     `Bahasa Indonesia. Fokus ke detail visual yang BELUM disebutkan di caption: subjek, aktivitas, ` +
     `teks yang terlihat di gambar (jika ada), dan suasana.`
+  );
+}
+
+function carouselPrompt(slideCount: number, caption?: string | null): string {
+  return (
+    `${captionContext(caption)}Ini adalah postingan carousel Instagram yang terdiri dari ${slideCount} slide berurutan.\n` +
+    `Deskripsikan isi visual dari SELURUH slide carousel ini secara komprehensif dalam Bahasa Indonesia.\n` +
+    `Sebutkan poin visual penting atau ringkasan alur/konten dari setiap slide (Slide 1 sampai Slide ${slideCount}), serta tema keseluruhan postingan.\n` +
+    `Fokus pada detail visual, teks penting di dalam gambar, dan pesan yang disampaikan di setiap slide yang belum lengkap di caption.`
   );
 }
 
@@ -84,15 +92,23 @@ function buildCombinePrompt(
   );
 }
 
-// ─── Vision model call ────────────────────────────────────────────────────────
+// ─── 9Router API helpers ──────────────────────────────────────────────────────
 
-function getVisionModel(): string {
-  return process.env.OPENROUTER_VISION_MODEL || "openrouter/free";
+function get9RouterBaseUrl(): string {
+  return (process.env.NINEROUTER_BASE_URL || "http://127.0.0.1:20128/v1").replace(/\/$/, "");
+}
+
+function get9RouterApiKey(): string {
+  return process.env.NINEROUTER_API_KEY || "";
+}
+
+function get9RouterModel(): string {
+  return process.env.NINEROUTER_MODEL || process.env.NINEROUTER_VISION_MODEL || "ag/gemini-3-flash";
 }
 
 /**
- * Memanggil vision model via OpenRouter dengan sebuah gambar (URL publik atau base64 lokal).
- * @param imageSource  URL publik atau path lokal (file:// akan dibaca, di-base64, dikiriim sebagai data URL)
+ * Memanggil vision model via 9Router API dengan sebuah gambar (URL publik atau file lokal).
+ * @param imageSource  URL publik atau path lokal
  * @param prompt       Prompt teks
  * @param opts         { local: true } jika imageSource adalah path lokal
  */
@@ -101,109 +117,174 @@ async function callVisionModel(
   prompt: string,
   opts: { local?: boolean } = {},
 ): Promise<string> {
-  let imageContent: { type: string; image_url: { url: string } };
+  let b64: string;
+  let mime = "image/jpeg";
 
   if (opts.local) {
+    const ext = path.extname(imageSource).toLowerCase();
+    if (ext === ".png") mime = "image/png";
+    else if (ext === ".webp") mime = "image/webp";
+    else if (ext === ".gif") mime = "image/gif";
     // Baca file lokal, encode ke base64
     const buf = await fs.readFile(imageSource);
-    const b64 = buf.toString("base64");
-    imageContent = {
-      type: "image_url",
-      image_url: { url: `data:image/jpeg;base64,${b64}` },
-    };
+    b64 = buf.toString("base64");
   } else {
-    imageContent = {
-      type: "image_url",
-      image_url: { url: imageSource },
-    };
-  }
-
-  const primaryModel = getVisionModel();
-  const modelsToTry = [primaryModel];
-  if (primaryModel !== "openrouter/free") {
-    modelsToTry.push("openrouter/free");
-  }
-
-  let lastErr: Error | null = null;
-  for (const model of modelsToTry) {
-    try {
-      const body = JSON.stringify({
-        model,
-        messages: [
-          {
-            role: "user",
-            content: [imageContent, { type: "text", text: prompt }],
-          },
-        ],
-        max_tokens: 400,
-      });
-
-      const res = await openRouterFetch(
-        "https://openrouter.ai/api/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://repostinsight.local",
-            "X-Title": "RepostInsight",
-          },
-          body,
-        },
-      );
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Vision model [${model}] error [${res.status}]: ${errText}`);
-      }
-
-      const data = await res.json();
-      const message = data?.choices?.[0]?.message;
-      const text: string = message?.content ?? message?.reasoning ?? "";
-      if (text.trim()) {
-        return text.trim();
-      }
-    } catch (err: any) {
-      console.warn(`[VisualDescriber] Panggilan ke model ${model} gagal:`, err.message);
-      lastErr = err;
+    // Unduh gambar dari URL remote, encode ke base64 untuk dikirim ke 9Router
+    const imgRes = await fetch(imageSource);
+    if (!imgRes.ok) {
+      throw new Error(`Gagal mengunduh gambar [${imgRes.status}]: ${imageSource}`);
     }
+    const ct = imgRes.headers.get("content-type");
+    if (ct && ct.startsWith("image/")) {
+      mime = ct.split(";")[0].trim();
+    }
+    const arrayBuf = await imgRes.arrayBuffer();
+    b64 = Buffer.from(arrayBuf).toString("base64");
   }
 
-  throw lastErr || new Error("Gagal memanggil seluruh kandidat vision model");
-}
+  const model = get9RouterModel();
+  const baseUrl = get9RouterBaseUrl();
+  const apiKey = get9RouterApiKey();
+  const endpoint = baseUrl.endsWith("/v1") ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
 
-/**
- * Memanggil chat completion biasa (tanpa gambar) — untuk langkah gabungan video (FR-10.2).
- */
-async function callChatCompletion(prompt: string): Promise<string> {
-  const chatModel = process.env.OPENROUTER_CHAT_MODEL || "openrouter/free";
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (apiKey) {
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  }
 
-  const body = JSON.stringify({
-    model: chatModel,
-    messages: [{ role: "user", content: prompt }],
-    max_tokens: 600,
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model,
+      stream: false,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:${mime};base64,${b64}`,
+              },
+            },
+          ],
+        },
+      ],
+    }),
   });
-
-  const res = await openRouterFetch(
-    "https://openrouter.ai/api/v1/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://repostinsight.local",
-        "X-Title": "RepostInsight",
-      },
-      body,
-    },
-  );
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Chat model error [${res.status}]: ${errText}`);
+    throw new Error(`9Router Vision model [${model}] error [${res.status}]: ${errText}`);
   }
 
   const data = await res.json();
-  const message = data?.choices?.[0]?.message;
-  const text: string = message?.content ?? message?.reasoning ?? "";
+  const text: string = data?.choices?.[0]?.message?.content ?? "";
+  if (text.trim()) {
+    return text.trim();
+  }
+
+  throw new Error("Model visual 9Router tidak mengembalikan teks deskripsi.");
+}
+
+/**
+ * Memanggil vision model via 9Router API dengan beberapa gambar sekaligus (misalnya seluruh slide carousel).
+ */
+async function callMultiImageVisionModel(
+  images: Array<{ b64: string; mime: string }>,
+  prompt: string,
+): Promise<string> {
+  const model = get9RouterModel();
+  const baseUrl = get9RouterBaseUrl();
+  const apiKey = get9RouterApiKey();
+  const endpoint = baseUrl.endsWith("/v1") ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (apiKey) {
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  }
+
+  const content: Array<{ type: string; text?: string; image_url?: { url: string } }> = [
+    { type: "text", text: prompt },
+  ];
+
+  for (const img of images) {
+    content.push({
+      type: "image_url",
+      image_url: {
+        url: `data:${img.mime};base64,${img.b64}`,
+      },
+    });
+  }
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model,
+      stream: false,
+      messages: [
+        {
+          role: "user",
+          content,
+        },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`9Router Vision model [${model}] error [${res.status}]: ${errText}`);
+  }
+
+  const data = await res.json();
+  const text: string = data?.choices?.[0]?.message?.content ?? "";
+  if (text.trim()) {
+    return text.trim();
+  }
+
+  throw new Error("Model visual 9Router tidak mengembalikan teks deskripsi.");
+}
+
+/**
+ * Memanggil chat completion via 9Router (tanpa gambar) — untuk langkah gabungan video (FR-10.2).
+ */
+async function callChatCompletion(prompt: string): Promise<string> {
+  const model = process.env.NINEROUTER_MODEL || process.env.NINEROUTER_CHAT_MODEL || "ag/gemini-3-flash";
+  const baseUrl = get9RouterBaseUrl();
+  const apiKey = get9RouterApiKey();
+  const endpoint = baseUrl.endsWith("/v1") ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (apiKey) {
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  }
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model,
+      stream: false,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`9Router Chat model error [${res.status}]: ${errText}`);
+  }
+
+  const data = await res.json();
+  const text: string = data?.choices?.[0]?.message?.content ?? "";
   return text.trim();
 }
 
@@ -251,6 +332,82 @@ function pickCoverImageUrl(post: PostForDescribe): string | null {
     if (typeof c === "string" && c.startsWith("http")) return c;
   }
   return null;
+}
+
+/**
+ * Ekstrak daftar URL gambar untuk setiap slide carousel dari raw_json.
+ */
+function pickCarouselSlideUrls(post: PostForDescribe): string[] {
+  const raw = post.rawJson as Record<string, unknown> | null;
+  if (!raw) return [];
+
+  const urls: string[] = [];
+
+  const pickBestSlideUrl = (item: any): string | null => {
+    if (!item) return null;
+    if (typeof item === "string" && item.startsWith("http")) return item;
+
+    // 1. image_versions (items array) atau image_versions2 (candidates array)
+    const items = item.image_versions?.items || item.image_versions2?.candidates;
+    if (Array.isArray(items) && items.length > 0) {
+      // Prioritaskan resolusi 600-1080px agar transfer cepat, hemat bandwidth & payload, namun tetap tajam
+      const med = items.find((x: any) => typeof x?.width === "number" && x.width <= 1080 && x.width >= 600);
+      if (med?.url && typeof med.url === "string" && med.url.startsWith("http")) return med.url;
+
+      const under1080 = items.find((x: any) => typeof x?.width === "number" && x.width <= 1080);
+      if (under1080?.url && typeof under1080.url === "string" && under1080.url.startsWith("http")) return under1080.url;
+
+      if (items[0]?.url && typeof items[0].url === "string" && items[0].url.startsWith("http")) return items[0].url;
+    }
+
+    // 2. Candidate langsung pada item
+    const directCandidates = [
+      item.thumbnail_url,
+      item.thumbnailUrl,
+      item.display_url,
+      item.displayUrl,
+      item.images?.standard_resolution?.url,
+      item.url,
+      item.imageUrl,
+      item.image_url,
+    ];
+
+    for (const c of directCandidates) {
+      if (typeof c === "string" && c.startsWith("http")) return c;
+    }
+
+    return null;
+  };
+
+  // 1. Array carousel_media (format standar Instagram Apify)
+  if (Array.isArray((raw as any).carousel_media) && (raw as any).carousel_media.length > 0) {
+    for (const item of (raw as any).carousel_media) {
+      const url = pickBestSlideUrl(item);
+      if (url) urls.push(url);
+    }
+    if (urls.length > 0) return urls;
+  }
+
+  // 2. Array images
+  if (Array.isArray((raw as any).images) && (raw as any).images.length > 0) {
+    for (const item of (raw as any).images) {
+      const url = pickBestSlideUrl(item);
+      if (url) urls.push(url);
+    }
+    if (urls.length > 0) return urls;
+  }
+
+  // 3. Array sidecarChildren atau childPosts
+  const children = (raw as any).sidecarChildren || (raw as any).childPosts;
+  if (Array.isArray(children) && children.length > 0) {
+    for (const item of children) {
+      const url = pickBestSlideUrl(item);
+      if (url) urls.push(url);
+    }
+    if (urls.length > 0) return urls;
+  }
+
+  return urls;
 }
 
 /**
@@ -320,6 +477,71 @@ async function describeImagePost(post: PostForDescribe): Promise<string> {
   return callVisionModel(imageUrl, imagePrompt(post.captionText));
 }
 
+// ─── Describe carousel (FR-10.1 pelengkap: seluruh slide) ───────────────────
+
+async function describeCarouselPost(post: PostForDescribe): Promise<string> {
+  const slideUrls = pickCarouselSlideUrls(post);
+
+  // Jika slide hanya 1 atau tidak ditemukan list slide, fallback ke single image post
+  if (slideUrls.length <= 1) {
+    return describeImagePost(post);
+  }
+
+  // Unduh seluruh slide secara concurrent (dengan timeout per request)
+  const downloadSlide = async (
+    url: string,
+    index: number,
+  ): Promise<{ index: number; b64: string; mime: string }> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25000); // 25 detik timeout per slide
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const mime = res.headers.get("content-type")?.split(";")[0].trim() || "image/jpeg";
+      const arrayBuf = await res.arrayBuffer();
+      const b64 = Buffer.from(arrayBuf).toString("base64");
+      return { index, b64, mime };
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  const results = await Promise.allSettled(
+    slideUrls.map((url, idx) => downloadSlide(url, idx + 1)),
+  );
+
+  const successfulSlides: Array<{ index: number; b64: string; mime: string }> = [];
+  results.forEach((res, i) => {
+    if (res.status === "fulfilled") {
+      successfulSlides.push(res.value);
+    } else {
+      console.warn(
+        `[VisualDescriber] Gagal mengunduh slide ${i + 1} untuk post ${post.id}:`,
+        (res.reason as Error)?.message || res.reason,
+      );
+    }
+  });
+
+  // Jika semua slide gagal diunduh, lempar error
+  if (successfulSlides.length === 0) {
+    throw new Error(`Semua gambar slide carousel gagal diunduh untuk post ${post.id}.`);
+  }
+
+  // Urutkan kembali berdasarkan nomor slide aslinya
+  successfulSlides.sort((a, b) => a.index - b.index);
+
+  // Jika hanya 1 slide yang berhasil diunduh, gunakan single image prompt
+  if (successfulSlides.length === 1) {
+    return callMultiImageVisionModel(
+      successfulSlides,
+      imagePrompt(post.captionText),
+    );
+  }
+
+  const prompt = carouselPrompt(successfulSlides.length, post.captionText);
+  return callMultiImageVisionModel(successfulSlides, prompt);
+}
+
 // ─── Describe video (FR-10.2) ────────────────────────────────────────────────
 
 async function describeVideoPost(post: PostForDescribe): Promise<string> {
@@ -337,7 +559,7 @@ async function describeVideoPost(post: PostForDescribe): Promise<string> {
     const thumbUrl = pickThumbnailUrl(post);
     if (thumbUrl) {
       thumbnailDesc = await callVisionModel(thumbUrl, thumbnailPrompt(caption));
-      await sleep(1500); // rate-limit tier gratis
+      await sleep(500);
     }
   } catch (e) {
     console.warn(
@@ -402,7 +624,7 @@ async function describeVideoPost(post: PostForDescribe): Promise<string> {
           { local: true },
         );
         frameDescriptions.push({ t, desc });
-        await sleep(3000); // rate-limit OpenRouter free tier
+        await sleep(800); // jeda antar frame
       } catch (frameErr) {
         console.warn(
           `[VisualDescriber] Frame ${i} (t=${t.toFixed(1)}s) gagal untuk post ${post.id}:`,
@@ -457,20 +679,36 @@ async function describeVideoPost(post: PostForDescribe): Promise<string> {
 
 // ─── Fungsi publik utama ──────────────────────────────────────────────────────
 
-type MediaTypeCategory = "image" | "video" | "skip";
+type MediaTypeCategory = "image" | "carousel" | "video" | "skip";
 
 function categorizeMediaType(
   mediaType: string | null,
   rawJson?: Record<string, unknown> | null,
 ): MediaTypeCategory {
-  // Cek numeric media_type Instagram (1 = photo, 2 = video/reel, 8 = carousel)
-  if (mediaType === "1" || mediaType === "8") return "image";
+  // 1. Cek jika ada indikasi carousel yang jelas di rawJson
+  if (rawJson) {
+    const raw = rawJson as any;
+    if (
+      (Array.isArray(raw.carousel_media) && raw.carousel_media.length > 1) ||
+      (Array.isArray(raw.images) && raw.images.length > 1) ||
+      (Array.isArray(raw.sidecarChildren) && raw.sidecarChildren.length > 1) ||
+      (Array.isArray(raw.childPosts) && raw.childPosts.length > 1) ||
+      raw.product_type === "carousel_container"
+    ) {
+      return "carousel";
+    }
+  }
+
+  // 2. Cek numeric media_type Instagram (1 = photo, 2 = video/reel, 8 = carousel)
+  if (mediaType === "8") return "carousel";
   if (mediaType === "2") return "video";
+  if (mediaType === "1") return "image";
 
   if (mediaType) {
     const t = mediaType.toLowerCase().trim();
-    if (t === "1" || t === "8") return "image";
-    if (t === "2") return "video";
+    if (t === "8" || t.includes("carousel") || t.includes("sidecar") || t.includes("album")) {
+      return "carousel";
+    }
     if (
       t.includes("video") ||
       t.includes("reel") ||
@@ -482,18 +720,18 @@ function categorizeMediaType(
     if (
       t.includes("photo") ||
       t.includes("image") ||
-      t.includes("carousel") ||
-      t.includes("sidecar") ||
-      t.includes("album") ||
       t.includes("feed")
     ) {
       return "image";
     }
   }
 
-  // Fallback: cek properti raw_json jika mediaType belum jelas
+  // 3. Fallback: cek properti raw_json jika mediaType belum jelas
   if (rawJson) {
     const raw = rawJson as any;
+    if (Array.isArray(raw.carousel_media) && raw.carousel_media.length > 0) {
+      return "carousel";
+    }
     if (
       raw.is_video === true ||
       raw.video_versions ||
@@ -502,7 +740,7 @@ function categorizeMediaType(
     ) {
       return "video";
     }
-    if (raw.carousel_media || raw.image_versions || raw.thumbnail_url) {
+    if (raw.image_versions || raw.thumbnail_url || raw.display_url || raw.displayUrl) {
       return "image";
     }
   }
@@ -511,7 +749,7 @@ function categorizeMediaType(
 }
 
 /**
- * Entry-point utama: describe sebuah post (foto atau video) dan kembalikan deskripsinya.
+ * Entry-point utama: describe sebuah post (foto, carousel seluruh slide, atau video) dan kembalikan deskripsinya.
  * Dipanggil dari scrapeLoop tepat setelah find-or-create post (FR-10.3).
  *
  * @throws Error jika gagal total — caller harus tangkap dan set visual_description_status = 'failed'
@@ -529,6 +767,10 @@ export async function describePost(post: PostForDescribe): Promise<string> {
     return describeVideoPost(post);
   }
 
-  // image / carousel
+  if (category === "carousel") {
+    return describeCarouselPost(post);
+  }
+
+  // image
   return describeImagePost(post);
 }

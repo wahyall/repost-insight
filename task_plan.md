@@ -60,3 +60,18 @@ Environment: Local Windows laptop (Intel i5 gen-7, RAM 8GB), single-user, budget
 - [x] NextAuth Credentials Provider & middleware
 - [x] Review manual checklist `SRS.md` §10
 - [x] Bahasa Indonesia consistency check
+
+### Fase 8 — Visual Description & Dynamic Multimodal [COMPLETE]
+- [x] Ekstraksi frame video reels via ffmpeg & visual description image/video
+- [x] Kolom `visual_description` dan `visual_description_status`
+
+### Fase 9 — Migrasi ke Ollama Local Models [IN PROGRESS]
+- [x] Setup Ollama di Disk D (`D:\Ollama` dan `D:\Ollama\models`) untuk mengatasi kapasitas Disk C
+- [x] Download dan verifikasi model `qwen3-embedding:0.6b` (1024-dimensi)
+- [x] Migrasi database PostgreSQL pgvector dari `vector(2048)` ke `vector(1024)`
+- [x] Implementasi `OllamaEmbeddingService` (`apps/worker/src/ollamaClient.ts`) dan update `embeddingLoop.ts`
+- [x] Update `visualDescriber.ts` ke Ollama multimodal base64 & chat completion
+- [x] Update `executeSemanticSearch` (`apps/web/lib/tools/index.ts`) ke Ollama embedding
+- [x] Update `/api/chat` (`apps/web/app/api/chat/route.ts`) ke Ollama chat completion + tool calling
+- [ ] Pull dan verifikasi `qwen3-vl:4b` selesai
+- [ ] End-to-end verification (chatbot RAG, semantic search, vision test)
