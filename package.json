@@ -14,6 +14,6 @@
     "db:migrate": "npm --workspace=@repostinsight/db run migrate",
     "db:generate": "npm --workspace=@repostinsight/db run generate",
     "db:studio": "npm --workspace=@repostinsight/db run studio",
-    "db:fresh": "tsx scratch/reset_db_fresh.ts"
+    "db:fresh": "tsx -r dotenv/config scratch/reset_db_fresh.ts dotenv_config_path=.env"
   }
 }

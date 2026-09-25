@@ -95,6 +95,21 @@ Timeline bersifat santai (tanpa deadline keras, sesuai `BRD.md` §8). Fase disus
 
 **Definition of Done**: aplikasi tidak bisa diakses tanpa login, seluruh checklist pengujian manual lolos.
 
+## Fase 8 — Deskripsi Visual Konten, Gambar & Video (Effort: Sedang-Besar)
+
+Spesifikasi lengkap: `VISUAL_DESCRIPTION.md`.
+
+- [x] Tambah kolom `visual_description` & `visual_description_status` ke tabel `posts`
+- [x] Tambah dependency `ffmpeg-static` di `apps/worker`
+- [x] Implementasi `describeImagePost()` untuk foto/carousel, sertakan caption sebagai konteks prompt (FR-10.1)
+- [x] Implementasi `describeVideoPost()`: describe thumbnail/cover + download video + ekstrak 3-5 frame merata (FR-10.2), describe tiap sumber dengan konteks caption, gabungkan
+- [x] Integrasikan pemanggilan di atas ke `scrapeLoop.ts` langsung setelah find-or-create post (FR-10.3), bukan loop terpisah
+- [x] Reset `embedding_status` ke `pending` setiap kali `visual_description` terisi (FR-10.4)
+- [x] Pastikan file video/frame sementara selalu dibersihkan (FR-10.7)
+- [ ] Uji manual: post foto, post video pendek (<15s), post video panjang (>45s), dan kasus URL sudah expired (harus gagal rapi, bukan crash worker)
+
+**Definition of Done**: post foto & video baru otomatis punya `visual_description` yang tersimpan dan ikut ter-embed ulang, tanpa mengganggu jalannya scraping post lain saat satu post gagal diproses.
+
 ## Open Items / Hal yang Masih Bisa Berubah
 
 - Pilihan final CopilotKit vs Vercel AI SDK murni untuk chat UI — diputuskan saat mulai Fase 6.

@@ -8,7 +8,7 @@ import { openRouterFetch } from "../openrouterKeyRotation";
 export async function executeSemanticSearch(query: string, limit: number = 5) {
   const safeLimit = Math.max(1, Math.min(15, limit));
 
-  const embeddingModel = process.env.OPENROUTER_EMBEDDING_MODEL || "liquid/lfm-2.5-embedding-350m:free";
+  const embeddingModel = process.env.OPENROUTER_EMBEDDING_MODEL || "nvidia/llama-nemotron-embed-vl-1b-v2:free";
 
   try {
     // openRouterFetch otomatis round-robin key jika rate limit

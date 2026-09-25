@@ -19,7 +19,7 @@ export class OpenRouterEmbeddingService {
   private baseUrl: string;
 
   constructor(
-    model: string = process.env.OPENROUTER_EMBEDDING_MODEL || "liquid/lfm-2.5-embedding-350m:free",
+    model: string = process.env.OPENROUTER_EMBEDDING_MODEL || "nvidia/llama-nemotron-embed-vl-1b-v2:free",
     baseUrl: string = "https://openrouter.ai/api/v1"
   ) {
     this.model = model;

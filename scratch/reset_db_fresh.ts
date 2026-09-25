@@ -12,6 +12,7 @@ async function resetFresh() {
       posts, 
       followers, 
       apify_api_keys, 
+      openrouter_api_keys, 
       chat_messages, 
       scrape_control 
     RESTART IDENTITY CASCADE;

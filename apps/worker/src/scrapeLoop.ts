@@ -1,6 +1,7 @@
 import { prisma } from "@repostinsight/db";
 import { RepostApifyService, ApifyActorItem } from "./apifyClient";
 import { getNextActiveApifyKey, handleKeyError } from "./keyRotation";
+import { describePost, PostForDescribe } from "./visualDescriber";
 
 const MAX_RETRY = 3;
 const LOOP_POLL_INTERVAL_MS = 5000;
@@ -53,7 +54,8 @@ export async function saveScrapedReposts(followerUsername: string, items: ApifyA
       }
     }
 
-    // 1. Upsert Post
+    // 1. Upsert Post (find-or-create, FR-4.1–4.3)
+    const isNewPost = !(await prisma.post.findUnique({ where: { id: postId }, select: { id: true } }));
     await prisma.post.upsert({
       where: { id: postId },
       create: {
@@ -68,6 +70,7 @@ export async function saveScrapedReposts(followerUsername: string, items: ApifyA
         takenAt,
         rawJson: item as object,
         embeddingStatus: "pending",
+        visualDescriptionStatus: "pending",
       },
       update: {
         code: code ?? undefined,
@@ -81,7 +84,49 @@ export async function saveScrapedReposts(followerUsername: string, items: ApifyA
       },
     });
 
-    // 2. Upsert RepostEvent (unique on follower_username, post_id)
+    // 2. Describe post (F10 — FR-10.3: langsung setelah find-or-create, di siklus yang sama)
+    //    Hanya describe post baru atau yang belum pernah berhasil didescribe.
+    const postRecord = await prisma.post.findUnique({
+      where: { id: postId },
+      select: { id: true, mediaType: true, captionText: true, rawJson: true, visualDescriptionStatus: true },
+    });
+
+    if (postRecord && postRecord.visualDescriptionStatus !== "done") {
+      const postForDescribe: PostForDescribe = {
+        id: postRecord.id,
+        mediaType: postRecord.mediaType,
+        captionText: postRecord.captionText,
+        rawJson: postRecord.rawJson as Record<string, unknown> | null,
+      };
+
+      try {
+        const visualDesc = await describePost(postForDescribe);
+        // FR-10.4: reset embedding_status ke pending supaya embedding worker embed ulang
+        await prisma.$executeRawUnsafe(
+          `UPDATE posts SET visual_description = $1, visual_description_status = 'done', embedding_status = 'pending', last_updated_at = NOW() WHERE id = $2`,
+          visualDesc,
+          postId
+        );
+        console.log(`[ScrapeLoop] Visual description berhasil untuk post ${postId} (${mediaType ?? "unknown"}).`);
+      } catch (descErr: any) {
+        if (descErr?.skip) {
+          // Media type tidak dikenali — skip tanpa marking failed
+          await prisma.$executeRawUnsafe(
+            `UPDATE posts SET visual_description_status = 'skipped', last_updated_at = NOW() WHERE id = $1`,
+            postId
+          );
+        } else {
+          // FR-10.6: kegagalan total (URL expired, dll) — tandai failed, tidak retry
+          console.warn(`[ScrapeLoop] Visual description GAGAL untuk post ${postId}:`, (descErr as Error).message);
+          await prisma.$executeRawUnsafe(
+            `UPDATE posts SET visual_description_status = 'failed', last_updated_at = NOW() WHERE id = $1`,
+            postId
+          );
+        }
+      }
+    }
+
+    // 3. Upsert RepostEvent (unique on follower_username, post_id)
     await prisma.repostEvent.upsert({
       where: {
         followerUsername_postId: {

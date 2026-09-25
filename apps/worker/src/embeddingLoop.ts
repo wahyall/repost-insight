@@ -20,40 +20,50 @@ export function removeEmojis(text: string): string {
 }
 
 /**
- * Filter caption, hapus emoji, dan potong teks agar tidak melebihi batas 512 token
- * (FR-5.3)
+ * Siapkan teks embedding sesuai FR-5.3:
+ * Urutan: hashtags → visual_description → caption_text
+ * Batas defensif 8.000 karakter (model nvidia punya 131K token, jauh lebih dari cukup untuk konten normal).
+ * Jika batas tersentuh, caption dipotong lebih dulu.
  */
-export function prepareEmbeddingText(captionText: string | null, hashtags: string[] = []): string {
-  const parts: string[] = [];
+export function prepareEmbeddingText(
+  captionText: string | null,
+  hashtags: string[] = [],
+  visualDescription?: string | null
+): string {
+  // 1. Hashtags
+  const formattedTags = hashtags
+    .map((h) => removeEmojis(h).replace(/^#/, "").trim().toLowerCase())
+    .filter((h) => h.length > 0)
+    .map((h) => `#${h}`)
+    .join(" ");
 
-  if (captionText) {
-    const cleanCaption = removeEmojis(captionText);
-    if (cleanCaption) {
-      parts.push(cleanCaption);
-    }
-  }
+  // 2. Visual description (sudah teks bersih dari vision model, tidak perlu strip emoji)
+  const cleanVisual = visualDescription?.trim() ?? "";
 
-  if (hashtags && hashtags.length > 0) {
-    const formattedTags = hashtags
-      .map((h) => removeEmojis(h).replace(/^#/, "").trim().toLowerCase())
-      .filter((h) => h.length > 0)
-      .map((h) => `#${h}`)
-      .join(" ");
-    if (formattedTags) {
-      parts.push(formattedTags);
-    }
-  }
+  // 3. Caption
+  const cleanCaption = captionText ? removeEmojis(captionText) : "";
+
+  // Susun bagian yang tidak kosong
+  const parts: string[] = [
+    formattedTags,
+    cleanVisual,
+    cleanCaption,
+  ].filter((p) => p.length > 0);
 
   const combined = parts.join("\n\n").trim();
   if (!combined) return "";
 
-  // Liquid LFM 350M has a strict 512 token limit.
-  // Tanpa emoji, 800-1000 karakter teks bahasa Indonesia berada sangat aman di bawah 512 token.
-  const MAX_CHARS = 800;
-  if (combined.length > MAX_CHARS) {
-    return combined.slice(0, MAX_CHARS);
+  // Batas defensif 8.000 karakter (FR-5.3): potong caption lebih dulu jika perlu
+  const MAX_CHARS = 8000;
+  if (combined.length <= MAX_CHARS) return combined;
+
+  // Rekonstruksi dengan caption dipotong
+  const baseWithoutCaption = [formattedTags, cleanVisual].filter((p) => p.length > 0).join("\n\n");
+  const remaining = MAX_CHARS - baseWithoutCaption.length - 2; // 2 untuk "\n\n"
+  if (remaining <= 0) {
+    return baseWithoutCaption.slice(0, MAX_CHARS);
   }
-  return combined;
+  return (baseWithoutCaption + "\n\n" + cleanCaption.slice(0, remaining)).trim();
 }
 
 /**
@@ -85,9 +95,22 @@ export async function startEmbeddingLoop(
       console.log(`[EmbeddingLoop] Memproses batch ${pendingPosts.length} post pending...`);
 
       // 2. Siapkan teks yang sudah di-truncate (FR-5.3)
+      //    Kolom visual_description tidak ada di Prisma model karena ditambah via SQL manual,
+      //    jadi ambil lewat $queryRaw
+      const postIds = pendingPosts.map((p) => p.id);
+      const visualRows: Array<{ id: string; visual_description: string | null }> =
+        postIds.length > 0
+          ? await prisma.$queryRawUnsafe(
+              `SELECT id, visual_description FROM posts WHERE id = ANY($1::text[])`,
+              postIds
+            )
+          : [];
+      const visualMap = new Map(visualRows.map((r) => [r.id, r.visual_description ?? null]));
+
       const validItems: { id: string; text: string }[] = [];
       for (const p of pendingPosts) {
-        const text = prepareEmbeddingText(p.captionText, p.hashtags);
+        const visualDesc = visualMap.get(p.id) ?? null;
+        const text = prepareEmbeddingText(p.captionText, p.hashtags, visualDesc);
         if (text) {
           validItems.push({ id: p.id, text });
         } else {
