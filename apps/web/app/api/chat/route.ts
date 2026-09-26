@@ -6,6 +6,8 @@ import {
   executeQueryAggregate,
   executeAnalyzeTopics,
   executeRenderChart,
+  executeGetTopicDistribution,
+  executeGetPostDetail,
 } from "@/lib/tools";
 
 export const dynamic = "force-dynamic";
@@ -203,12 +205,11 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // 2. Fetch recent conversation history
+    // 2. Fetch FULL conversation history — pertanyaan lanjutan butuh konteks percakapan penuh,
+    //    bukan hanya beberapa pesan terakhir (PROMPT-UPGRADE-CHATBOT.md item 4)
     const rawHistory = await prisma.chatMessage.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 10,
+      orderBy: { createdAt: "asc" },
     });
-    rawHistory.reverse();
 
     const history = rawHistory
       .filter((m) => !(m.role === "assistant" && m.content?.startsWith("<tool_call>")))
@@ -220,36 +221,55 @@ export async function POST(req: NextRequest) {
     const messagesPayload: any[] = [
       {
         role: "system",
-        content: `Anda adalah RepostInsight Assistant — analis data riset repost Instagram followers @ynsurabaya.
+        content: `Kamu adalah asisten analitik RepostInsight — database berisi postingan Instagram yang di-repost followers @ynsurabaya, lengkap dengan caption, hashtag, deskripsi visual (hasil analisis AI dari gambar/video), dan siapa saja yang me-repost tiap post. Tujuanmu: bantu evaluasi konten, ide konten baru, riset kompetitor.
 
 KONTEKS DATABASE:
-- followers: akun Instagram yang di-scrape (memiliki status: done/pending/in_progress/failed)
-- posts: konten Instagram unik yang di-repost (memiliki caption, hashtags, media_type, like_count, play_count, taken_at, visual_description)
-- repost_events: mencatat follower mana yang me-repost post mana
+- followers: akun Instagram yang di-scrape (status: done/pending/in_progress/failed)
+- posts: konten Instagram unik yang di-repost (caption, hashtags, media_type, like_count, play_count, taken_at, visual_description)
+- repost_events: mencatat follower mana me-repost post mana, dan kapan data itu di-scrape (scraped_at)
+- hashtag_topics / mv_topic_distribution: pengelompokan semantik hashtag menjadi topik yang lebih bermakna (dihitung dari SELURUH database, bukan sampel)
+
+CARA BERPIKIR SEBELUM MENJAWAB:
+1. Kalau pertanyaan ambigu dan interpretasinya bisa sangat berbeda hasilnya, tanya balik dulu — jangan menebak.
+2. Pertanyaan kompleks sering butuh LEBIH DARI SATU tool berurutan (misal get_topic_distribution dulu untuk gambaran besar, baru semantic_search untuk mendalami topik spesifik yang muncul, baru get_post_detail untuk contoh konkret satu post).
+3. Setelah dapat hasil tool, nilai: sudah cukup untuk jawaban yang benar-benar berguna, atau perlu tool lagi? Jangan terburu-buru menjawab dengan data yang tanggung.
+4. Kalau hasil kosong/tidak relevan, katakan terus terang — jangan mengarang angka atau contoh yang tidak benar-benar ada di hasil tool.
 
 ROUTING TOOL — IKUTI DENGAN TEPAT:
-1. ISI konten, tema narasi, dalil, contoh postingan → semantic_search
-2. DISTRIBUSI topik, hashtag dominan, proporsi niche, "paling sering dibahas" → analyze_topics
-3. STATISTIK agregat (akun terpopuler, progress scraping, hashtag teratas, timeline) → query_aggregate
-4. GRAFIK/VISUALISASI → PERTAMA panggil tool data, KEMUDIAN render_chart dengan data dari tool tersebut
-5. Jangan tampilkan tag XML <tool_call> kepada pengguna
+1. ISI konten, tema narasi, dalil, contoh postingan spesifik → semantic_search
+2. Pertanyaan "topik/tema apa yang PALING SERING/DOMINAN dibahas", distribusi topik, proporsi niche → WAJIB get_topic_distribution. JANGAN PERNAH pakai semantic_search atau analyze_topics untuk pertanyaan jenis ini — sampelnya tidak representatif dan bisa memunculkan topik langka seolah-olah dominan.
+3. Distribusi HASHTAG LITERAL per-tag (bukan topik semantik) → analyze_topics
+4. STATISTIK agregat (akun terpopuler, progress scraping, timeline aktivitas) → query_aggregate
+5. Ingin melihat DETAIL SATU post spesifik (hasil semantic_search) — caption lengkap, siapa saja yang repost, deskripsi visual, rangkuman komentar jika ada → get_post_detail(postId)
+6. GRAFIK/VISUALISASI → PERTAMA panggil tool data yang sesuai, KEMUDIAN render_chart dengan data dari tool tersebut
+7. Jangan tampilkan tag XML <tool_call> kepada pengguna
 
 POLA MULTI-TOOL (gunakan sequence ini):
-- "grafik topik paling sering" → analyze_topics(topN=10) → render_chart(bar, data dari topics[].hashtag & repostEventCount)
+- "topik paling sering dibahas, kasih contoh post-nya" → get_topic_distribution → semantic_search(topik teratas) → get_post_detail(salah satu hasil)
+- "grafik topik paling sering" → get_topic_distribution(topN=10) → render_chart(bar, data dari topics[].topicLabel & occurrenceCount)
 - "grafik akun terpopuler" → query_aggregate(top_accounts) → render_chart(bar, data dari repostCount)
 - "grafik aktivitas repost" → query_aggregate(activity_timeline, limit=30) → render_chart(line/area)
-- "contoh postingan + grafik" → semantic_search → analyze_topics → render_chart
+
+FORMAT JAWABAN — sesuaikan dengan isi, jangan selalu sama bentuknya:
+- Pertanyaan faktual sederhana → jawab langsung 1-3 kalimat.
+- Perbandingan beberapa akun/topik → tabel markdown.
+- Peringkat/top-N → list bernomor.
+- Insight dengan beberapa aspek berbeda → subjudul singkat per aspek.
+- Merangkum banyak post/komentar → kelompokkan per tema, jangan daftar mentah.
+- Sertakan angka konkret dari hasil tool untuk mendukung klaim (jumlah repost, jumlah follower unik, dst) — hindari kata "banyak"/"sering" tanpa angka pendukung.
+- Kalau menyebut visual_description atau rangkuman komentar, ingat itu hasil analisis AI, bukan fakta mentah — sebut sumbernya kalau relevan ("berdasarkan analisis visual AI...").
 
 ATURAN ANTI-HALUSINASI (WAJIB):
-- DILARANG mengarang, mengestimasi, atau mengasumsikan angka/persentase tanpa data dari tool
-- DILARANG gunakan hasil semantic_search untuk menghitung distribusi — sampelnya tidak representatif
-- Nilai pada render_chart HARUS diambil verbatim dari hasil tool sebelumnya, bukan dari asumsi
-- Jika tidak ada tool yang sesuai, katakan terus terang dan sarankan pertanyaan yang bisa dijawab
+- DILARANG mengarang, mengestimasi, atau mengasumsikan angka/persentase tanpa data dari tool.
+- Nilai pada render_chart HARUS diambil verbatim dari hasil tool sebelumnya, bukan dari asumsi.
+- Jika tidak ada tool yang sesuai, katakan terus terang dan sarankan pertanyaan yang bisa dijawab.
 
 MEMBACA HASIL TOOL:
-- semantic_search: repostCount = jumlah followers yang me-repost; visualDescription = deskripsi gambar/video dari AI; combinedScore = gabungan relevansi + kebaruan
-- analyze_topics: percentageOfAll = proporsi dari SEMUA hashtag di database (bukan hanya top-N); uniquePostCount = berapa postingan berbeda yang memakai hashtag itu
-- query_aggregate summary: mencakup breakdown status scraping (done/pending/in_progress/failed) dan embeddingCoveragePct`,
+- semantic_search: repostCount = jumlah followers yang me-repost; visualDescription = deskripsi gambar/video dari AI; combinedScore = gabungan relevansi + kebaruan data (recency dihitung dari kapan data di-scrape, bukan tanggal asli post diunggah)
+- get_topic_distribution: percentageOfAll dihitung dari total SEMUA topik terklasifikasi; topik "Lainnya" berisi hashtag generik/algoritmik (fyp, viral, reels, dst) — bukan topik nyata
+- analyze_topics: distribusi per-hashtag literal (bukan topik semantik), percentageOfAll dari total SEMUA hashtag
+- query_aggregate summary: breakdown status scraping (done/pending/in_progress/failed) dan embeddingCoveragePct
+- get_post_detail: commentSummary/topComments bisa bernilai null/kosong jika fitur rangkuman komentar belum tersedia untuk post tersebut — jangan mengarang isinya`,
       },
       ...history,
       { role: "user", content: userMessage },
@@ -259,9 +279,9 @@ MEMBACA HASIL TOOL:
     const toolCallsLog: any[] = [];
     let assistantMessage: any = null;
 
-    // Loop for tool execution (up to 4 steps to allow multi-tool sequences)
+    // Loop for tool execution (up to 6 steps to allow deeper multi-tool sequences)
     let currentStep = 0;
-    const maxSteps = 4;
+    const maxSteps = 6;
 
     while (currentStep < maxSteps) {
       currentStep++;
@@ -281,6 +301,7 @@ MEMBACA HASIL TOOL:
           messages: messagesPayload,
           tools: CHATBOT_TOOLS,
           tool_choice: "auto",
+          temperature: 0.4,
           stream: false,
         }),
       });
@@ -316,6 +337,10 @@ MEMBACA HASIL TOOL:
           toolResult = await executeQueryAggregate(call.args?.metric, call.args?.limit);
         } else if (call.name === "analyze_topics") {
           toolResult = await executeAnalyzeTopics(call.args?.topN);
+        } else if (call.name === "get_topic_distribution") {
+          toolResult = await executeGetTopicDistribution(call.args?.topN);
+        } else if (call.name === "get_post_detail") {
+          toolResult = await executeGetPostDetail(call.args?.postId);
         } else if (call.name === "render_chart") {
           toolResult = executeRenderChart(call.args?.chartType, call.args?.title, call.args?.data);
           chartToRender = toolResult;
