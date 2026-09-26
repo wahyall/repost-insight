@@ -1,5 +1,6 @@
 import { prisma } from "@repostinsight/db";
 import { RepostApifyService, ApifyActorItem } from "./apifyClient";
+
 import { getNextActiveApifyKey, handleKeyError } from "./keyRotation";
 import { describePost, PostForDescribe } from "./visualDescriber";
 
@@ -192,16 +193,46 @@ export async function reconcileInProgressFollowers(getService: () => Promise<Rep
       console.log(`[Reconcile] @${follower.username} (runId: ${follower.apifyRunId}): Status Apify adalah ${runStatus.status}`);
 
       if (runStatus.status === "SUCCEEDED" && runStatus.datasetId) {
-        const items = await apifyService.getDatasetItems(runStatus.datasetId);
-        await saveScrapedReposts(follower.username, items);
-        await prisma.follower.update({
-          where: { username: follower.username },
-          data: {
-            status: "done",
-            lastScrapedAt: new Date(),
-          },
-        });
-        console.log(`[Reconcile] @${follower.username} selesai direkonsiliasi -> done (${items.length} repost).`);
+        const { validItems, errorItems } = await apifyService.getDatasetItems(runStatus.datasetId);
+
+        // Jika seluruh item adalah error (0 valid) → perlakukan sebagai failure, retry dengan key berikutnya
+        if (validItems.length === 0 && errorItems.length > 0) {
+          const errSummary = errorItems.map((e) => e.error).join(", ");
+          console.warn(
+            `[Reconcile] @${follower.username} — semua ${errorItems.length} item adalah error (${errSummary}). Dianggap gagal, akan di-retry.`
+          );
+          const newRetryCount = follower.retryCount + 1;
+          const newStatus = newRetryCount >= MAX_RETRY ? "failed" : "pending";
+          await prisma.follower.update({
+            where: { username: follower.username },
+            data: {
+              status: newStatus,
+              retryCount: newRetryCount,
+              apifyRunId: null, // reset agar tidak dimonitor lagi
+            },
+          });
+          console.log(
+            `[Reconcile] @${follower.username} -> ${newStatus} (retry: ${newRetryCount}/${MAX_RETRY})`
+          );
+        } else {
+          if (errorItems.length > 0) {
+            console.warn(
+              `[Reconcile] @${follower.username} — ${errorItems.length} error item dari Apify:`,
+              errorItems.map((e) => e.error).join(", ")
+            );
+          }
+          await saveScrapedReposts(follower.username, validItems);
+          await prisma.follower.update({
+            where: { username: follower.username },
+            data: {
+              status: "done",
+              lastScrapedAt: new Date(),
+            },
+          });
+          console.log(
+            `[Reconcile] @${follower.username} selesai direkonsiliasi -> done (${validItems.length} repost valid, ${errorItems.length} error).`
+          );
+        }
       } else if (
         runStatus.status === "FAILED" ||
         runStatus.status === "ABORTED" ||
@@ -279,16 +310,46 @@ export async function startScrapeLoop(
           const runStatus = await apifyService.getRunStatus(follower.apifyRunId!);
 
           if (runStatus.status === "SUCCEEDED" && runStatus.datasetId) {
-            const items = await apifyService.getDatasetItems(runStatus.datasetId);
-            await saveScrapedReposts(follower.username, items);
-            await prisma.follower.update({
-              where: { username: follower.username },
-              data: {
-                status: "done",
-                lastScrapedAt: new Date(),
-              },
-            });
-            console.log(`[ScrapeLoop] Selesai: @${follower.username} -> done (${items.length} repost tersimpan).`);
+            const { validItems, errorItems } = await apifyService.getDatasetItems(runStatus.datasetId);
+
+            // Jika seluruh item adalah error (0 valid) → perlakukan sebagai failure, retry dengan key berikutnya
+            if (validItems.length === 0 && errorItems.length > 0) {
+              const errSummary = errorItems.map((e) => e.error).join(", ");
+              console.warn(
+                `[ScrapeLoop] @${follower.username} — semua ${errorItems.length} item adalah error (${errSummary}). Dianggap gagal, akan di-retry dengan key berikutnya.`
+              );
+              const newRetryCount = follower.retryCount + 1;
+              const newStatus = newRetryCount >= MAX_RETRY ? "failed" : "pending";
+              await prisma.follower.update({
+                where: { username: follower.username },
+                data: {
+                  status: newStatus,
+                  retryCount: newRetryCount,
+                  apifyRunId: null, // reset agar tidak dimonitor lagi
+                },
+              });
+              console.log(
+                `[ScrapeLoop] @${follower.username} -> ${newStatus} (retry: ${newRetryCount}/${MAX_RETRY})`
+              );
+            } else {
+              if (errorItems.length > 0) {
+                console.warn(
+                  `[ScrapeLoop] @${follower.username} — ${errorItems.length} error item dari Apify (e.g. upstream_request_failed):`,
+                  errorItems.map((e) => e.error).join(", ")
+                );
+              }
+              await saveScrapedReposts(follower.username, validItems);
+              await prisma.follower.update({
+                where: { username: follower.username },
+                data: {
+                  status: "done",
+                  lastScrapedAt: new Date(),
+                },
+              });
+              console.log(
+                `[ScrapeLoop] Selesai: @${follower.username} -> done (${validItems.length} repost valid, ${errorItems.length} error).`
+              );
+            }
           } else if (
             runStatus.status === "FAILED" ||
             runStatus.status === "ABORTED" ||

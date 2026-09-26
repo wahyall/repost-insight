@@ -4,6 +4,7 @@ import {
   CHATBOT_TOOLS,
   executeSemanticSearch,
   executeQueryAggregate,
+  executeAnalyzeTopics,
   executeRenderChart,
 } from "@/lib/tools";
 
@@ -189,7 +190,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Pesan tidak boleh kosong" }, { status: 400 });
     }
 
-    const model = process.env.NINEROUTER_MODEL || process.env.NINEROUTER_CHAT_MODEL || "ag/gemini-3-flash";
+    const model = process.env.NINEROUTER_CHAT_MODEL || "ag/gemini-3-flash";
     const baseUrl = (process.env.NINEROUTER_BASE_URL || "http://127.0.0.1:20128/v1").replace(/\/$/, "");
     const apiKey = process.env.NINEROUTER_API_KEY || "";
     const endpoint = baseUrl.endsWith("/v1") ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
@@ -202,10 +203,10 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // 2. Fetch recent conversation history (exclude any broken raw tool tags from previous bugs)
+    // 2. Fetch recent conversation history
     const rawHistory = await prisma.chatMessage.findMany({
       orderBy: { createdAt: "desc" },
-      take: 6,
+      take: 10,
     });
     rawHistory.reverse();
 
@@ -220,12 +221,35 @@ export async function POST(req: NextRequest) {
       {
         role: "system",
         content: `Anda adalah RepostInsight Assistant — analis data riset repost Instagram followers @ynsurabaya.
-Tugas Anda:
-1. Menjawab pertanyaan pengguna dengan ramah, berbasis data nyata, dan berbahasa Indonesia yang baik.
-2. Jika pengguna bertanya tentang konten, topik postingan, narasi, atau kajian -> gunakan tool 'semantic_search'.
-3. Jika pengguna bertanya tentang peringkat akun, akun paling banyak di-repost, statistik, atau hashtag -> gunakan tool 'query_aggregate'.
-4. Jika pengguna meminta grafik atau perbandingan visual -> gunakan tool 'render_chart'.
-5. Jangan pernah menampilkan tag XML internal seperti <tool_call> kepada pengguna. Berikan jawaban naratif informatif setelah menerima data dari tool.`,
+
+KONTEKS DATABASE:
+- followers: akun Instagram yang di-scrape (memiliki status: done/pending/in_progress/failed)
+- posts: konten Instagram unik yang di-repost (memiliki caption, hashtags, media_type, like_count, play_count, taken_at, visual_description)
+- repost_events: mencatat follower mana yang me-repost post mana
+
+ROUTING TOOL — IKUTI DENGAN TEPAT:
+1. ISI konten, tema narasi, dalil, contoh postingan → semantic_search
+2. DISTRIBUSI topik, hashtag dominan, proporsi niche, "paling sering dibahas" → analyze_topics
+3. STATISTIK agregat (akun terpopuler, progress scraping, hashtag teratas, timeline) → query_aggregate
+4. GRAFIK/VISUALISASI → PERTAMA panggil tool data, KEMUDIAN render_chart dengan data dari tool tersebut
+5. Jangan tampilkan tag XML <tool_call> kepada pengguna
+
+POLA MULTI-TOOL (gunakan sequence ini):
+- "grafik topik paling sering" → analyze_topics(topN=10) → render_chart(bar, data dari topics[].hashtag & repostEventCount)
+- "grafik akun terpopuler" → query_aggregate(top_accounts) → render_chart(bar, data dari repostCount)
+- "grafik aktivitas repost" → query_aggregate(activity_timeline, limit=30) → render_chart(line/area)
+- "contoh postingan + grafik" → semantic_search → analyze_topics → render_chart
+
+ATURAN ANTI-HALUSINASI (WAJIB):
+- DILARANG mengarang, mengestimasi, atau mengasumsikan angka/persentase tanpa data dari tool
+- DILARANG gunakan hasil semantic_search untuk menghitung distribusi — sampelnya tidak representatif
+- Nilai pada render_chart HARUS diambil verbatim dari hasil tool sebelumnya, bukan dari asumsi
+- Jika tidak ada tool yang sesuai, katakan terus terang dan sarankan pertanyaan yang bisa dijawab
+
+MEMBACA HASIL TOOL:
+- semantic_search: repostCount = jumlah followers yang me-repost; visualDescription = deskripsi gambar/video dari AI; combinedScore = gabungan relevansi + kebaruan
+- analyze_topics: percentageOfAll = proporsi dari SEMUA hashtag di database (bukan hanya top-N); uniquePostCount = berapa postingan berbeda yang memakai hashtag itu
+- query_aggregate summary: mencakup breakdown status scraping (done/pending/in_progress/failed) dan embeddingCoveragePct`,
       },
       ...history,
       { role: "user", content: userMessage },
@@ -235,9 +259,9 @@ Tugas Anda:
     const toolCallsLog: any[] = [];
     let assistantMessage: any = null;
 
-    // Loop for tool execution (up to 2 steps)
+    // Loop for tool execution (up to 4 steps to allow multi-tool sequences)
     let currentStep = 0;
-    const maxSteps = 2;
+    const maxSteps = 4;
 
     while (currentStep < maxSteps) {
       currentStep++;
@@ -290,6 +314,8 @@ Tugas Anda:
           toolResult = await executeSemanticSearch(call.args?.query, call.args?.limit);
         } else if (call.name === "query_aggregate") {
           toolResult = await executeQueryAggregate(call.args?.metric, call.args?.limit);
+        } else if (call.name === "analyze_topics") {
+          toolResult = await executeAnalyzeTopics(call.args?.topN);
         } else if (call.name === "render_chart") {
           toolResult = executeRenderChart(call.args?.chartType, call.args?.title, call.args?.data);
           chartToRender = toolResult;

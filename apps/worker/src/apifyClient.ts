@@ -32,6 +32,28 @@ export interface ApifyActorItem {
   [key: string]: unknown;
 }
 
+/** Item yang dikembalikan actor ketika terjadi error (bukan data repost valid) */
+export interface ApifyErrorItem {
+  username?: string;
+  error: string;
+  success: false;
+  maxResults?: number;
+  [key: string]: unknown;
+}
+
+export interface GetDatasetItemsResult {
+  validItems: ApifyActorItem[];
+  errorItems: ApifyErrorItem[];
+}
+
+/** Deteksi apakah item dari dataset adalah error item (bukan data repost valid) */
+function isErrorItem(item: Record<string, unknown>): item is ApifyErrorItem {
+  return (
+    item["success"] === false ||
+    (typeof item["error"] === "string" && item["error"].length > 0 && !item["postId"] && !item["id"])
+  );
+}
+
 export interface ApifyLimits {
   currentMonthlyUsageUsd?: number;
   maxMonthlyUsageUsd?: number;
@@ -57,7 +79,7 @@ export class RepostApifyService {
    * Dispatch a new scrape run for a single Instagram follower
    * Per SRS §5: Body: { username: follower }, maxItems: 20
    */
-  async startScrapeRun(followerUsername: string, maxResults: number = 20): Promise<ApifyRunResult> {
+  async startScrapeRun(followerUsername: string, maxResults: number = 10): Promise<ApifyRunResult> {
     try {
       const run = await this.client.actor(this.actorId).start(
         {
@@ -103,14 +125,26 @@ export class RepostApifyService {
   }
 
   /**
-   * Fetch scraped dataset items once run is SUCCEEDED
+   * Fetch scraped dataset items once run is SUCCEEDED.
+   * Memisahkan item valid (repost data) dari error items (upstream_request_failed, dll.)
    */
-  async getDatasetItems(datasetId: string): Promise<ApifyActorItem[]> {
+  async getDatasetItems(datasetId: string): Promise<GetDatasetItemsResult> {
     const dataset = await this.client.dataset(datasetId).listItems({
       limit: 100,
     });
 
-    return dataset.items as ApifyActorItem[];
+    const validItems: ApifyActorItem[] = [];
+    const errorItems: ApifyErrorItem[] = [];
+
+    for (const item of dataset.items as Record<string, unknown>[]) {
+      if (isErrorItem(item)) {
+        errorItems.push(item as ApifyErrorItem);
+      } else {
+        validItems.push(item as ApifyActorItem);
+      }
+    }
+
+    return { validItems, errorItems };
   }
 
   /**

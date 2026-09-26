@@ -291,9 +291,10 @@ async function callChatCompletion(prompt: string): Promise<string> {
 // ─── Algoritma frame (VISUAL_DESCRIPTION.md §4) ──────────────────────────────
 
 function frameCountFor(durationSec: number): number {
-  if (durationSec < 15) return 3;
-  if (durationSec <= 45) return 4;
-  return 5;
+  if (durationSec < 15) return 5;
+  if (durationSec <= 45) return 10;
+  if (durationSec <= 75) return 15;
+  return 20;
 }
 
 function sleep(ms: number): Promise<void> {

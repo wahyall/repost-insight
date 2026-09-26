@@ -14,6 +14,7 @@ import {
   Play,
   Pause,
   ArrowLeft,
+  RotateCcw,
 } from "lucide-react";
 
 interface StatusSummary {
@@ -74,6 +75,12 @@ export default function FollowersSettingsPage() {
   });
   const [togglingControl, setTogglingControl] = useState(false);
 
+  // Re-scrape all state
+  const [showRescrapeModal, setShowRescrapeModal] = useState(false);
+  const [rescrapeScope, setRescrapeScope] = useState<"done" | "failed" | "all">("done");
+  const [rescheduling, setRescheduling] = useState(false);
+  const [rescrapeResult, setRescrapeResult] = useState<{ success: boolean; message: string } | null>(null);
+
   const fetchControl = async () => {
     try {
       const res = await fetch("/api/scrape-control");
@@ -132,6 +139,29 @@ export default function FollowersSettingsPage() {
     const interval = setInterval(fetchControl, 10000);
     return () => clearInterval(interval);
   }, [filterStatus, page]);
+
+  const handleRescrapeAll = async () => {
+    setRescheduling(true);
+    setRescrapeResult(null);
+    try {
+      const res = await fetch("/api/followers/rescrape-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: rescrapeScope }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setRescrapeResult({ success: true, message: data.message });
+        fetchSummaryAndList();
+      } else {
+        setRescrapeResult({ success: false, message: data.error || "Gagal mereset followers." });
+      }
+    } catch {
+      setRescrapeResult({ success: false, message: "Terjadi gangguan jaringan atau server." });
+    } finally {
+      setRescheduling(false);
+    }
+  };
 
   const handleRetry = async (username: string) => {
     try {
@@ -214,13 +244,22 @@ export default function FollowersSettingsPage() {
           </p>
         </div>
 
-        <button
-          onClick={fetchSummaryAndList}
-          className="inline-flex items-center gap-2 self-start md:self-auto px-4 py-2 text-sm font-medium bg-white hover:bg-slate-50 border border-slate-300 rounded-lg text-slate-700 transition"
-        >
-          <RefreshCw className={`w-4 h-4 ${loadingList ? "animate-spin" : ""}`} />
-          Segarkan Data
-        </button>
+        <div className="flex items-center gap-2 self-start md:self-auto">
+          <button
+            onClick={() => { setRescrapeResult(null); setShowRescrapeModal(true); }}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-rose-600 hover:bg-rose-700 text-white rounded-lg transition shadow-sm"
+          >
+            <RotateCcw className="w-4 h-4" />
+            Re-scrape Semua
+          </button>
+          <button
+            onClick={fetchSummaryAndList}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-white hover:bg-slate-50 border border-slate-300 rounded-lg text-slate-700 transition"
+          >
+            <RefreshCw className={`w-4 h-4 ${loadingList ? "animate-spin" : ""}`} />
+            Segarkan Data
+          </button>
+        </div>
       </div>
 
       {/* Scrape Engine Control Card */}
@@ -533,6 +572,102 @@ export default function FollowersSettingsPage() {
           </div>
         )}
       </div>
+
+      {/* Re-scrape All Modal */}
+      {showRescrapeModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowRescrapeModal(false); }}
+        >
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden">
+            {/* Modal Header */}
+            <div className="flex items-center gap-3 px-6 py-4 border-b border-slate-200 bg-rose-50">
+              <div className="p-2 bg-rose-100 rounded-xl">
+                <RotateCcw className="w-5 h-5 text-rose-600" />
+              </div>
+              <div>
+                <h2 className="text-base font-bold text-slate-900">Re-scrape Semua Followers</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Reset status followers agar antrian scraping berjalan ulang</p>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="px-6 py-5 space-y-4">
+              <p className="text-sm text-slate-600">
+                Pilih kelompok follower mana yang ingin di-scrape ulang. Follower yang sedang
+                berstatus <strong>in_progress</strong> tidak akan terpengaruh agar kuota Apify
+                tidak terbuang sia-sia.
+              </p>
+
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-slate-700 uppercase tracking-wider">Kelompok yang direset:</label>
+                <div className="grid gap-2">
+                  {([
+                    { value: "done", label: "Hanya yang Selesai (done)", desc: "Re-scrape follower yang sudah pernah selesai — untuk memperbarui data terbaru." },
+                    { value: "failed", label: "Hanya yang Gagal (failed)", desc: "Reset retry counter dan coba lagi follower yang sebelumnya gagal." },
+                    { value: "all", label: "Semua (done + failed + pending)", desc: "⚠️ Reset semua, termasuk yang masih antre. Hati-hati jika jumlah follower sangat banyak." },
+                  ] as const).map((opt) => (
+                    <label
+                      key={opt.value}
+                      className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition ${
+                        rescrapeScope === opt.value
+                          ? "border-rose-400 bg-rose-50"
+                          : "border-slate-200 bg-white hover:bg-slate-50"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="rescrapeScope"
+                        value={opt.value}
+                        checked={rescrapeScope === opt.value}
+                        onChange={() => setRescrapeScope(opt.value)}
+                        className="mt-0.5 accent-rose-600"
+                      />
+                      <div>
+                        <p className="text-sm font-semibold text-slate-800">{opt.label}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">{opt.desc}</p>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {rescrapeResult && (
+                <div className={`p-3 rounded-xl text-sm flex items-start gap-2 ${
+                  rescrapeResult.success
+                    ? "bg-emerald-50 border border-emerald-200 text-emerald-900"
+                    : "bg-rose-50 border border-rose-200 text-rose-900"
+                }`}>
+                  {rescrapeResult.success
+                    ? <CheckCircle2 className="w-4 h-4 mt-0.5 flex-shrink-0 text-emerald-600" />
+                    : <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0 text-rose-600" />}
+                  <span>{rescrapeResult.message}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-200 bg-slate-50">
+              <button
+                onClick={() => setShowRescrapeModal(false)}
+                className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition"
+              >
+                Batal
+              </button>
+              <button
+                onClick={handleRescrapeAll}
+                disabled={rescheduling}
+                className="inline-flex items-center gap-2 px-5 py-2 text-sm font-semibold bg-rose-600 hover:bg-rose-700 text-white rounded-lg transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {rescheduling ? (
+                  <><RefreshCw className="w-4 h-4 animate-spin" /> Mereset...</>)
+                  : (<><RotateCcw className="w-4 h-4" /> Konfirmasi Re-scrape</>)
+                }
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
