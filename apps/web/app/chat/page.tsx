@@ -26,6 +26,8 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface ChartData {
   isChart: boolean;
@@ -237,7 +239,13 @@ export default function ChatPage() {
                     : "bg-white border border-slate-200 text-slate-800 rounded-bl-none"
                 }`}
               >
-                <div className="whitespace-pre-wrap">{msg.content}</div>
+                {msg.role === "user" ? (
+                  <div className="whitespace-pre-wrap">{msg.content}</div>
+                ) : (
+                  <div className="prose prose-sm prose-slate max-w-none prose-table:text-xs prose-th:px-2 prose-td:px-2 prose-p:my-1.5 prose-headings:my-2">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  </div>
+                )}
 
                 {/* Render Chart Inline if present (FR-6.4) */}
                 {msg.chart && msg.chart.data && msg.chart.data.length > 0 && (
