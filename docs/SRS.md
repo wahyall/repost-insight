@@ -194,6 +194,13 @@ CREATE TABLE chat_messages (
   tool_calls  jsonb,
   created_at  timestamptz NOT NULL DEFAULT now()
 );
+
+-- Kelompok semantik hashtag (lihat get_topic_distribution di F6, docs/PROMPT-UPGRADE-CHATBOT.md)
+CREATE TABLE hashtag_topics (
+  hashtag     text PRIMARY KEY,
+  topic_label text NOT NULL,
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
 ```
 
 **Indeks**: tambahkan index pgvector (`ivfflat` atau `hnsw`) pada `posts.embedding` bila pencarian brute-force mulai terasa lambat (perkiraan aman tanpa index hingga puluhan ribu baris pada hardware yang tersedia). Tambahkan index biasa pada `repost_events.post_id` dan `repost_events.follower_username` untuk mempercepat agregasi dashboard.

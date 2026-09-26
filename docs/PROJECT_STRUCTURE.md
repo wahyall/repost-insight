@@ -202,6 +202,15 @@ model ChatMessage {
 
   @@map("chat_messages")
 }
+
+model HashtagTopic {
+  hashtag    String   @id
+  topicLabel String   @map("topic_label")
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([topicLabel])
+  @@map("hashtag_topics")
+}
 ```
 
 ## 4. Catatan Setup Database (pgvector)
