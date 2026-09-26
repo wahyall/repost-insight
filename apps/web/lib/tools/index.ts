@@ -361,11 +361,34 @@ export async function executeGetTopicDistribution(topN: number = 10) {
   const globalTotal = allRows.reduce((s, r) => s + Number(r.usage_count), 0) || 1;
   const topRows = allRows.slice(0, safeTopN);
 
+  // Cakupan: post tanpa hashtag, atau yang hashtag-nya belum diklasifikasikan ke
+  // hashtag_topics, tidak muncul di MV sama sekali. Tanpa angka ini, distribusi
+  // parsial bisa terbaca seolah-olah mewakili seluruh database.
+  const [coverageRows, totalRows] = await Promise.all([
+    prisma.$queryRawUnsafe<any[]>(
+      `SELECT COUNT(DISTINCT re.id)::int AS covered
+       FROM posts p
+       CROSS JOIN LATERAL unnest(p.hashtags) AS tag
+       JOIN hashtag_topics ht ON ht.hashtag = tag
+       JOIN repost_events re ON re.post_id = p.id;`
+    ),
+    prisma.$queryRawUnsafe<any[]>(`SELECT COUNT(*)::int AS total FROM repost_events;`),
+  ]);
+  const coveredReposts = Number(coverageRows[0]?.covered ?? 0);
+  const totalReposts = Number(totalRows[0]?.total ?? 0);
+  const coveragePct =
+    totalReposts > 0
+      ? parseFloat(((coveredReposts / totalReposts) * 100).toFixed(1))
+      : 0;
+
   return {
     source: "mv_topic_distribution",
-    note: "Distribusi TOPIK (kelompok semantik beberapa hashtag terkait), dihitung dari SELURUH database — bukan sampel. percentageOfAll = proporsi dari total SEMUA topik. Topik 'Lainnya' berisi hashtag generik/algoritmik (fyp, viral, reels, dst).",
+    note: "Distribusi TOPIK (kelompok semantik beberapa hashtag terkait), dihitung dari SELURUH bagian database yang sudah terklasifikasi — bukan sampel. percentageOfAll = proporsi dari total SEMUA topik terklasifikasi. coveragePct = persentase repost yang tercakup analisis ini (sisanya adalah post tanpa hashtag atau hashtag yang belum diklasifikasikan worker). JIKA coveragePct di bawah 90, WAJIB sebutkan angka cakupan itu di jawaban dan jangan mengklaim angkanya mewakili 100% database. Topik 'Lainnya' berisi hashtag generik/algoritmik (fyp, viral, reels, dst).",
     totalTopicsFound: allRows.length,
     globalTotalUsage: globalTotal,
+    coveragePct,
+    coveredRepostEvents: coveredReposts,
+    totalRepostEvents: totalReposts,
     topics: topRows.map((r) => ({
       topicLabel: r.topic_label,
       occurrenceCount: Number(r.usage_count),
@@ -406,7 +429,8 @@ export async function executeGetPostDetail(postId: string) {
     visualDescription: post.visualDescription ?? null,
     commentSummary: null,
     topComments: [] as { text: string; likeCount: number }[],
-    repostedBy: post.repostEvents.map((r) => r.followerUsername),
+    repostedBy: post.repostEvents.slice(0, 50).map((r) => r.followerUsername),
+    repostedByTruncated: post.repostEvents.length > 50,
     repostCount: post.repostEvents.length,
   };
 }

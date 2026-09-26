@@ -271,7 +271,7 @@ ATURAN ANTI-HALUSINASI (WAJIB):
 
 MEMBACA HASIL TOOL:
 - semantic_search: repostCount = jumlah followers yang me-repost; visualDescription = deskripsi gambar/video dari AI; combinedScore = gabungan relevansi + kebaruan data (recency dihitung dari kapan data di-scrape, bukan tanggal asli post diunggah)
-- get_topic_distribution: percentageOfAll dihitung dari total SEMUA topik terklasifikasi; topik "Lainnya" berisi hashtag generik/algoritmik (fyp, viral, reels, dst) — bukan topik nyata
+- get_topic_distribution: percentageOfAll dihitung dari total SEMUA topik terklasifikasi; coveragePct = persentase repost yang tercakup analisis (post tanpa hashtag / hashtag belum diklasifikasikan tidak ikut terhitung) — jika coveragePct di bawah 90, sebutkan angka cakupan itu di jawaban dan jangan mengklaim hasilnya mewakili 100% database; topik "Lainnya" berisi hashtag generik/algoritmik (fyp, viral, reels, dst) — bukan topik nyata
 - analyze_topics: distribusi per-hashtag literal (bukan topik semantik), percentageOfAll dari total SEMUA hashtag
 - query_aggregate summary: breakdown status scraping (done/pending/in_progress/failed) dan embeddingCoveragePct
 - get_post_detail: commentSummary/topComments bisa bernilai null/kosong jika fitur rangkuman komentar belum tersedia untuk post tersebut — jangan mengarang isinya`,
