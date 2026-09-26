@@ -255,7 +255,7 @@ async function callMultiImageVisionModel(
 /**
  * Memanggil chat completion via 9Router (tanpa gambar) — untuk langkah gabungan video (FR-10.2).
  */
-async function callChatCompletion(prompt: string): Promise<string> {
+export async function callChatCompletion(prompt: string): Promise<string> {
   const model = process.env.NINEROUTER_MODEL || process.env.NINEROUTER_CHAT_MODEL || "ag/gemini-3-flash";
   const baseUrl = get9RouterBaseUrl();
   const apiKey = get9RouterApiKey();

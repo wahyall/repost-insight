@@ -11,6 +11,7 @@ import { startScrapeLoop } from "./scrapeLoop";
 
 import { OllamaEmbeddingService } from "./ollamaClient";
 import { startEmbeddingLoop } from "./embeddingLoop";
+import { reclassifyHashtagTopics } from "./hashtagTopics";
 
 const shouldStopRef = { stop: false };
 
@@ -37,6 +38,30 @@ export async function getActiveApifyService(): Promise<RepostApifyService | null
   return null;
 }
 
+const HASHTAG_RECLASSIFY_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 jam
+
+/**
+ * Menuntaskan backlog klasifikasi topik hashtag saat startup, lalu mengulang tiap 24 jam
+ * untuk menangkap hashtag baru dari scraping berikutnya (PROMPT-UPGRADE-CHATBOT.md item 7).
+ */
+async function startHashtagTopicLoop(shouldStopRef: { stop: boolean }) {
+  console.log("[Worker] Memulai loop klasifikasi topik hashtag...");
+  while (!shouldStopRef.stop) {
+    try {
+      await reclassifyHashtagTopics();
+    } catch (err) {
+      console.error("[Worker] Gagal menjalankan reclassifyHashtagTopics:", err);
+    }
+
+    const checkIntervalMs = 60_000;
+    let waited = 0;
+    while (waited < HASHTAG_RECLASSIFY_INTERVAL_MS && !shouldStopRef.stop) {
+      await new Promise((resolve) => setTimeout(resolve, checkIntervalMs));
+      waited += checkIntervalMs;
+    }
+  }
+}
+
 async function main() {
   console.log("==========================================");
   console.log("  RepostInsight Background Worker Engine  ");
@@ -57,10 +82,11 @@ async function main() {
 
   const embeddingService = new OllamaEmbeddingService();
 
-  // Run both scraping loop and embedding pipeline concurrently
+  // Run scraping loop, embedding pipeline, and hashtag topic classification concurrently
   await Promise.all([
     startScrapeLoop(getActiveApifyService, shouldStopRef),
     startEmbeddingLoop(embeddingService, shouldStopRef),
+    startHashtagTopicLoop(shouldStopRef),
   ]);
 }
 
