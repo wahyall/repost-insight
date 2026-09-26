@@ -42,11 +42,14 @@ export async function executeSemanticSearch(query: string, limit: number = 5) {
 
     const vectorStr = `[${queryVector.join(",")}]`;
 
-    // 2. Rentang waktu GLOBAL seluruh database (bukan hanya dari kandidat window)
+    // 2. Rentang waktu GLOBAL seluruh database — basis kebaruan adalah KAPAN DATA DI-SCRAPE
+    //    (repost_events.scraped_at), BUKAN tanggal asli post diunggah di IG (taken_at).
     const tsRange: any[] = await prisma.$queryRawUnsafe(
-      `SELECT EXTRACT(EPOCH FROM MIN(taken_at))::bigint AS min_ts,
-              EXTRACT(EPOCH FROM MAX(taken_at))::bigint AS max_ts
-       FROM posts WHERE taken_at IS NOT NULL AND embedding IS NOT NULL;`
+      `SELECT EXTRACT(EPOCH FROM MIN(re.scraped_at))::bigint AS min_ts,
+              EXTRACT(EPOCH FROM MAX(re.scraped_at))::bigint AS max_ts
+       FROM repost_events re
+       JOIN posts p ON p.id = re.post_id
+       WHERE p.embedding IS NOT NULL;`
     );
     const globalMinTs = Number(tsRange[0]?.min_ts ?? 0);
     const globalMaxTs = Number(tsRange[0]?.max_ts ?? 0);
@@ -67,6 +70,7 @@ export async function executeSemanticSearch(query: string, limit: number = 5) {
          p.visual_description,
          COUNT(re.id)::int AS repost_count,
          COUNT(DISTINCT re.follower_username)::int AS unique_reposter_count,
+         MAX(re.scraped_at) AS last_scraped_at,
          (p.embedding <=> $1::vector) AS distance
        FROM posts p
        LEFT JOIN repost_events re ON re.post_id = p.id
@@ -84,11 +88,11 @@ export async function executeSemanticSearch(query: string, limit: number = 5) {
       return { source: "pgvector_semantic_search", results: [] };
     }
 
-    // 4. Re-rank dengan global-normalized recency
+    // 4. Re-rank dengan global-normalized recency — basis: kapan data di-scrape, bukan taken_at
     const reranked = candidatePosts.map((p) => {
       const similarity = Math.max(0, 1 - (p.distance ?? 1));
-      const ts = p.taken_at
-        ? Math.floor(new Date(p.taken_at).getTime() / 1000)
+      const ts = p.last_scraped_at
+        ? Math.floor(new Date(p.last_scraped_at).getTime() / 1000)
         : globalMinTs;
       const recencyScore = (ts - globalMinTs) / globalTsRange;
       const combinedScore = SIMILARITY_WEIGHT * similarity + RECENCY_WEIGHT * recencyScore;
@@ -331,6 +335,83 @@ export async function executeAnalyzeTopics(topN: number = 15) {
 }
 
 /**
+ * Tool: Distribusi Topik (semantik, whole-database) — PROMPT-UPGRADE-CHATBOT.md item 7
+ * Berbeda dari analyze_topics (per-hashtag literal): ini mengelompokkan hashtag jadi TOPIK
+ * lewat tabel hashtag_topics (diisi worker via reclassifyHashtagTopics), akurat untuk
+ * SELURUH database — bukan sampel semantic_search.
+ */
+export async function executeGetTopicDistribution(topN: number = 10) {
+  const safeTopN = Math.max(1, Math.min(30, topN));
+
+  const allRows: any[] = await prisma.$queryRawUnsafe(
+    `SELECT topic_label, usage_count, unique_reposters_count, unique_post_count
+     FROM mv_topic_distribution
+     ORDER BY usage_count DESC;`
+  );
+
+  if (allRows.length === 0) {
+    return {
+      source: "mv_topic_distribution",
+      note: "Belum ada topik terklasifikasi (worker belum selesai memproses backlog hashtag).",
+      totalTopicsFound: 0,
+      topics: [],
+    };
+  }
+
+  const globalTotal = allRows.reduce((s, r) => s + Number(r.usage_count), 0) || 1;
+  const topRows = allRows.slice(0, safeTopN);
+
+  return {
+    source: "mv_topic_distribution",
+    note: "Distribusi TOPIK (kelompok semantik beberapa hashtag terkait), dihitung dari SELURUH database — bukan sampel. percentageOfAll = proporsi dari total SEMUA topik. Topik 'Lainnya' berisi hashtag generik/algoritmik (fyp, viral, reels, dst).",
+    totalTopicsFound: allRows.length,
+    globalTotalUsage: globalTotal,
+    topics: topRows.map((r) => ({
+      topicLabel: r.topic_label,
+      occurrenceCount: Number(r.usage_count),
+      uniquePostCount: Number(r.unique_post_count),
+      uniqueReposters: Number(r.unique_reposters_count),
+      percentageOfAll: parseFloat(((Number(r.usage_count) / globalTotal) * 100).toFixed(2)),
+    })),
+  };
+}
+
+/**
+ * Tool: Detail Satu Post — drill-down setelah semantic_search (PROMPT-UPGRADE-CHATBOT.md item 3)
+ * commentSummary/topComments sengaja null/kosong: fitur rangkuman komentar (F11) belum
+ * diimplementasikan di skema saat ini — tool tetap harus berjalan tanpa error.
+ */
+export async function executeGetPostDetail(postId: string) {
+  const post = await prisma.post.findUnique({
+    where: { id: postId },
+    include: {
+      repostEvents: { select: { followerUsername: true } },
+    },
+  });
+
+  if (!post) {
+    return { found: false };
+  }
+
+  return {
+    found: true,
+    id: post.id,
+    ownerUsername: post.ownerUsername,
+    captionText: post.captionText,
+    hashtags: post.hashtags,
+    mediaType: post.mediaType,
+    likeCount: post.likeCount,
+    playCount: post.playCount,
+    takenAt: post.takenAt ? post.takenAt.toISOString().split("T")[0] : null,
+    visualDescription: post.visualDescription ?? null,
+    commentSummary: null,
+    topComments: [] as { text: string; likeCount: number }[],
+    repostedBy: post.repostEvents.map((r) => r.followerUsername),
+    repostCount: post.repostEvents.length,
+  };
+}
+
+/**
  * Tool 4: Render Chart Generator (FR-6.4)
  */
 export function executeRenderChart(
@@ -400,7 +481,7 @@ export const CHATBOT_TOOLS = [
     function: {
       name: "analyze_topics",
       description:
-        "Menghitung distribusi topik/tema nyata dari SELURUH database berdasarkan hashtag yang terkandung di postingan yang di-repost. Gunakan tool ini (bukan semantic_search) setiap kali pengguna bertanya: 'topik apa paling sering dibahas', 'tema dominan', 'distribusi konten', 'proporsi topik', 'kategori konten terbanyak', atau meminta grafik distribusi topik/niche.",
+        "Menghitung distribusi HASHTAG LITERAL (per-tag, bukan topik semantik) dari seluruh database. Untuk pertanyaan 'topik/tema apa paling sering dibahas' atau 'distribusi topik', gunakan 'get_topic_distribution' (topik semantik yang mengelompokkan beberapa hashtag terkait), BUKAN tool ini dan BUKAN semantic_search. Tool ini cocok jika pengguna secara spesifik bertanya soal hashtag literal (bukan topik/tema).",
       parameters: {
         type: "object",
         properties: {
@@ -445,6 +526,42 @@ export const CHATBOT_TOOLS = [
           },
         },
         required: ["chartType", "title", "data"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_topic_distribution",
+      description:
+        "Menghitung distribusi TOPIK (kelompok semantik dari beberapa hashtag terkait, misal #sedekah + #infaq + #zakat -> 'Sedekah & Kedermawanan') dari SELURUH database repost. WAJIB dipakai untuk pertanyaan: 'topik apa paling sering/dominan dibahas', 'tema apa yang lagi ramai', 'distribusi topik', 'proporsi niche konten'. JANGAN PERNAH gunakan semantic_search atau analyze_topics untuk pertanyaan jenis ini — keduanya tidak representatif untuk distribusi topik (semantic_search hanya sampel kecil, analyze_topics hanya per-hashtag literal, bukan topik semantik).",
+      parameters: {
+        type: "object",
+        properties: {
+          topN: {
+            type: "number",
+            description: "Jumlah topik teratas yang dikembalikan (default 10, maks 30)",
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_post_detail",
+      description:
+        "Mengambil detail lengkap SATU postingan spesifik berdasarkan post ID (didapat dari field 'id' pada hasil semantic_search) — caption penuh, hashtag, deskripsi visual AI, daftar follower yang me-repost, dan rangkuman komentar jika tersedia. Gunakan untuk drill-down memberi contoh konkret setelah menemukan post relevan lewat semantic_search.",
+      parameters: {
+        type: "object",
+        properties: {
+          postId: {
+            type: "string",
+            description: "ID post Instagram (field 'id' dari hasil semantic_search atau get_post_detail sebelumnya)",
+          },
+        },
+        required: ["postId"],
       },
     },
   },
