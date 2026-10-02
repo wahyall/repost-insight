@@ -46,6 +46,7 @@ export async function callChatLLM(prompt: string): Promise<string> {
   const res = await fetch(endpoint, {
     method: "POST",
     headers,
+    signal: AbortSignal.timeout(30000),
     body: JSON.stringify({
       model,
       stream: false,
@@ -482,6 +483,17 @@ export async function executeGetPostDetail(postId: string) {
     where: { id: postId },
     include: {
       repostEvents: { select: { followerUsername: true } },
+      comments: {
+        orderBy: { likeCount: "desc" },
+        take: 10,
+        select: {
+          id: true,
+          text: true,
+          likeCount: true,
+          commenterUsername: true,
+          commentedAt: true,
+        },
+      },
     },
   });
 
@@ -501,8 +513,13 @@ export async function executeGetPostDetail(postId: string) {
     takenAt: post.takenAt ? post.takenAt.toISOString().split("T")[0] : null,
     visualDescription: post.visualDescription ?? null,
     thumbnailUrl: extractThumbnailUrl(post.rawJson),
-    commentSummary: null,
-    topComments: [] as { text: string; likeCount: number }[],
+    commentSummary: post.commentSummary ?? null,
+    topComments:
+      post.comments?.map((c) => ({
+        text: c.text,
+        likeCount: c.likeCount ?? 0,
+        commenterUsername: c.commenterUsername,
+      })) ?? [],
     repostedBy: post.repostEvents.slice(0, 50).map((r) => r.followerUsername),
     repostedByTruncated: post.repostEvents.length > 50,
     repostCount: post.repostEvents.length,
@@ -707,6 +724,211 @@ export function executeRenderChart(
     chartType,
     title,
     data,
+  };
+}
+
+/**
+ * F11.1: Sintesis keresahan/kebutuhan yang BERULANG lintas banyak post dari sampel commentSummary terbaru.
+ * Ini sintesis kualitatif dari sampel, BUKAN statistik pasti.
+ */
+export async function executeGetCommunitySentimentPulse(sampleSize: number = 30) {
+  const safeSample = Math.max(5, Math.min(100, Math.floor(sampleSize) || 30));
+  const postsWithSummary = await prisma.post.findMany({
+    where: { commentSummary: { not: null } },
+    orderBy: { lastUpdatedAt: "desc" },
+    take: safeSample,
+    select: { id: true, ownerUsername: true, commentSummary: true, topicLabel: true },
+  });
+
+  const totalPostsWithSummary = await prisma.post.count({ where: { commentSummary: { not: null } } });
+
+  if (!postsWithSummary.length) {
+    return {
+      pulse: null,
+      sampleSize: 0,
+      totalPostsWithCommentSummary: totalPostsWithSummary,
+      note: "Belum ada post dengan rangkuman komentar (comment_summary) di database. Jalankan scraping komentar terlebih dahulu.",
+    };
+  }
+
+  const prompt = `Berikut rangkuman komentar dari ${postsWithSummary.length} post berbeda:
+${postsWithSummary
+  .map(
+    (p, i) =>
+      `${i + 1}. [Topik: ${p.topicLabel ?? "tidak diketahui"}, Kreator: @${p.ownerUsername ?? "anonim"}] ${p.commentSummary}`
+  )
+  .join("\n")}
+
+Dari rangkuman-rangkuman di atas, sintesiskan dalam 5-7 poin: apa keresahan, kebutuhan, atau
+harapan yang PALING SERING muncul lintas post (bukan satu post saja)? Kelompokkan per tema
+kalau ada pola jelas. Bahasa Indonesia.`;
+
+  let pulse: string | null = null;
+  try {
+    pulse = await callChatLLM(prompt);
+  } catch (err: any) {
+    pulse = `Gagal memanggil LLM: ${err?.message || String(err)}`;
+  }
+
+  return {
+    sampleSize: postsWithSummary.length,
+    totalPostsWithCommentSummary: totalPostsWithSummary,
+    note: "Ini sintesis kualitatif dari sampel post terbaru, bukan statistik pasti seluruh database",
+    pulse,
+  };
+}
+
+/**
+ * F11.2: Pertanyaan berulang dari audiens — bahan ide konten yang menjawab kebutuhan audiens.
+ */
+export async function executeDetectRecurringQuestions(sampleSize: number = 50) {
+  const safeSample = Math.max(5, Math.min(100, Math.floor(sampleSize) || 50));
+  const questionComments = await prisma.comment.findMany({
+    where: { text: { contains: "?" } },
+    orderBy: { likeCount: "desc" },
+    take: safeSample,
+    select: { text: true, likeCount: true, postId: true, commenterUsername: true },
+  });
+
+  if (!questionComments.length) {
+    return {
+      recurringQuestionThemes: null,
+      sampleSize: 0,
+      note: "Belum ditemukan komentar berbentuk pertanyaan di database.",
+    };
+  }
+
+  const prompt = `Berikut komentar berbentuk pertanyaan dari audiens (diurutkan dari paling banyak disukai):
+${questionComments.map((c, i) => `${i + 1}. [${c.likeCount ?? 0} suka] ${c.text}`).join("\n")}
+
+Kelompokkan jadi tema pertanyaan yang BERULANG (bukan daftar mentah) — apa yang paling
+sering ditanyakan/belum jelas bagi audiens? Rangkum 4-6 poin, Bahasa Indonesia. Bisa jadi
+bahan konten yang menjawab pertanyaan tersebut.`;
+
+  let recurringQuestionThemes: string | null = null;
+  try {
+    recurringQuestionThemes = await callChatLLM(prompt);
+  } catch (err: any) {
+    recurringQuestionThemes = `Gagal memanggil LLM: ${err?.message || String(err)}`;
+  }
+
+  return {
+    sampleSize: questionComments.length,
+    recurringQuestionThemes,
+  };
+}
+
+/**
+ * F11.3: Full-text search langsung ke teks komentar mentah untuk kutipan/contoh literal audiens.
+ */
+export async function executeSearchComments(query: string, limit: number = 15) {
+  const safeLimit = Math.max(1, Math.min(30, Math.floor(limit) || 15));
+  const rows = await prisma.comment.findMany({
+    where: { text: { contains: query, mode: "insensitive" } },
+    orderBy: { likeCount: "desc" },
+    take: safeLimit,
+    include: {
+      post: {
+        select: {
+          id: true,
+          code: true,
+          captionText: true,
+          ownerUsername: true,
+          topicLabel: true,
+        },
+      },
+    },
+  });
+
+  return {
+    query,
+    count: rows.length,
+    results: rows.map((c) => ({
+      commentId: c.id,
+      text: c.text,
+      likeCount: c.likeCount,
+      commenterUsername: c.commenterUsername,
+      commentedAt: c.commentedAt ? c.commentedAt.toISOString().split("T")[0] : null,
+      postId: c.postId,
+      postCode: c.post.code,
+      postCaption: c.post.captionText,
+      postOwner: c.post.ownerUsername,
+      postTopic: c.post.topicLabel,
+    })),
+  };
+}
+
+/**
+ * F11.4: Komentar paling disukai di SELURUH database (lintas semua post).
+ */
+export async function executeGetMostLikedCommentsOverall(limit: number = 15) {
+  const safeLimit = Math.max(1, Math.min(30, Math.floor(limit) || 15));
+  const rows = await prisma.comment.findMany({
+    orderBy: { likeCount: "desc" },
+    take: safeLimit,
+    include: {
+      post: {
+        select: {
+          id: true,
+          code: true,
+          captionText: true,
+          ownerUsername: true,
+          topicLabel: true,
+        },
+      },
+    },
+  });
+
+  return {
+    count: rows.length,
+    results: rows.map((c) => ({
+      commentId: c.id,
+      text: c.text,
+      likeCount: c.likeCount,
+      commenterUsername: c.commenterUsername,
+      postId: c.postId,
+      postCode: c.post.code,
+      postOwner: c.post.ownerUsername,
+      postTopic: c.post.topicLabel,
+      postCaption: c.post.captionText,
+    })),
+  };
+}
+
+/**
+ * F11.5: Rasio komentar terhadap repost — membedakan konten 'pemicu diskusi' vs 'murni dibagikan'.
+ */
+export async function executeGetCommentToRepostRatio(limit: number = 15) {
+  const safeLimit = Math.max(1, Math.min(30, Math.floor(limit) || 15));
+  const rows = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT p.id, p.code, p.caption_text, p.owner_username, p.topic_label,
+            COUNT(DISTINCT c.id)::int AS comment_count,
+            COUNT(DISTINCT re.id)::int AS repost_count,
+            CASE WHEN COUNT(DISTINCT re.id) = 0 THEN NULL
+                 ELSE ROUND(COUNT(DISTINCT c.id)::numeric / COUNT(DISTINCT re.id), 2)
+            END AS comment_to_repost_ratio
+     FROM posts p
+     LEFT JOIN comments c ON c.post_id = p.id
+     LEFT JOIN repost_events re ON re.post_id = p.id
+     GROUP BY p.id, p.code, p.caption_text, p.owner_username, p.topic_label
+     HAVING COUNT(DISTINCT re.id) > 0
+     ORDER BY comment_to_repost_ratio DESC NULLS LAST
+     LIMIT $1;`,
+    safeLimit
+  );
+
+  return {
+    note: "Ratio tinggi = konten memicu diskusi (banyak komentar relatif ke repost). Ratio rendah = konten 'murni dibagikan' tanpa banyak diskusi.",
+    results: rows.map((r) => ({
+      postId: r.id,
+      code: r.code,
+      captionText: r.caption_text,
+      ownerUsername: r.owner_username,
+      topicLabel: r.topic_label,
+      commentCount: r.comment_count,
+      repostCount: r.repost_count,
+      ratio: r.comment_to_repost_ratio !== null ? Number(r.comment_to_repost_ratio) : null,
+    })),
   };
 }
 
@@ -986,6 +1208,74 @@ export const CHATBOT_TOOLS = [
           },
         },
         required: ["headers", "rows"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_community_sentiment_pulse",
+      description:
+        "Mensintesiskan keresahan/kebutuhan/harapan yang berulang LINTAS BANYAK post dari sampel comment_summary terbaru. Ini SINTESIS KUALITATIF, BUKAN statistik pasti — jangan dipakai untuk klaim persentase/peringkat eksak (pakai get_topic_distribution untuk itu). Cocok untuk 'apa yang jadi concern komunitas belakangan ini', 'kebutuhan audiens secara umum'.",
+      parameters: {
+        type: "object",
+        properties: { sampleSize: { type: "number", description: "default 30, rentang 5-100" } },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "detect_recurring_questions",
+      description:
+        "Mendeteksi dan mengelompokkan pertanyaan yang berulang dari komentar audiens — bahan ide konten yang menjawab kebutuhan/kebingungan audiens. Gunakan untuk 'apa yang sering ditanyakan audiens'.",
+      parameters: {
+        type: "object",
+        properties: { sampleSize: { type: "number", description: "default 50, rentang 5-100" } },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_comments",
+      description:
+        "Mencari teks komentar mentah secara langsung berdasarkan kata kunci — untuk menemukan kutipan/contoh literal dari audiens, bukan rangkuman. Gunakan saat user minta 'contoh komentar yang menyebut X' atau 'kutipan asli soal Y'.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Kata kunci pencarian" },
+          limit: { type: "number", description: "default 15, maks 30" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_most_liked_comments_overall",
+      description:
+        "Komentar paling disukai di SELURUH database (lintas semua post) — sinyal paling 'disetujui' massal secara keseluruhan, bukan per post. Gunakan untuk 'komentar paling viral/didukung banyak orang'.",
+      parameters: {
+        type: "object",
+        properties: { limit: { type: "number", description: "default 15, maks 30" } },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_comment_to_repost_ratio",
+      description:
+        "Membandingkan rasio jumlah komentar terhadap jumlah repost per post — membedakan konten 'pemicu diskusi' (komentar tinggi, repost rendah) vs konten 'murni dibagikan' (repost tinggi, komentar rendah). Gunakan untuk pertanyaan soal jenis konten yang memicu diskusi vs yang cuma dibagikan.",
+      parameters: {
+        type: "object",
+        properties: { limit: { type: "number", description: "default 15, maks 30" } },
+        required: [],
       },
     },
   },

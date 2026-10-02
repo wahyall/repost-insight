@@ -28,7 +28,8 @@ export function removeEmojis(text: string): string {
 export function prepareEmbeddingText(
   captionText: string | null,
   hashtags: string[] = [],
-  visualDescription?: string | null
+  visualDescription?: string | null,
+  commentSummary?: string | null
 ): string {
   // 1. Hashtags
   const formattedTags = hashtags
@@ -40,13 +41,17 @@ export function prepareEmbeddingText(
   // 2. Visual description (sudah teks bersih dari vision model, tidak perlu strip emoji)
   const cleanVisual = visualDescription?.trim() ?? "";
 
-  // 3. Caption
+  // 3. Comment summary (FR-11.5: rangkuman komentar audiens)
+  const cleanCommentSummary = commentSummary?.trim() ?? "";
+
+  // 4. Caption
   const cleanCaption = captionText ? removeEmojis(captionText) : "";
 
   // Susun bagian yang tidak kosong
   const parts: string[] = [
     formattedTags,
     cleanVisual,
+    cleanCommentSummary,
     cleanCaption,
   ].filter((p) => p.length > 0);
 
@@ -58,7 +63,9 @@ export function prepareEmbeddingText(
   if (combined.length <= MAX_CHARS) return combined;
 
   // Rekonstruksi dengan caption dipotong
-  const baseWithoutCaption = [formattedTags, cleanVisual].filter((p) => p.length > 0).join("\n\n");
+  const baseWithoutCaption = [formattedTags, cleanVisual, cleanCommentSummary]
+    .filter((p) => p.length > 0)
+    .join("\n\n");
   const remaining = MAX_CHARS - baseWithoutCaption.length - 2; // 2 untuk "\n\n"
   if (remaining <= 0) {
     return baseWithoutCaption.slice(0, MAX_CHARS);
@@ -110,7 +117,7 @@ export async function startEmbeddingLoop(
       const validItems: { id: string; text: string }[] = [];
       for (const p of pendingPosts) {
         const visualDesc = visualMap.get(p.id) ?? null;
-        const text = prepareEmbeddingText(p.captionText, p.hashtags, visualDesc);
+        const text = prepareEmbeddingText(p.captionText, p.hashtags, visualDesc, p.commentSummary);
         if (text) {
           validItems.push({ id: p.id, text });
         } else {

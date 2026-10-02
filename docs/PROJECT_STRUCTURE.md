@@ -135,12 +135,18 @@ model Post {
   embeddingStatus String                       @default("pending") @map("embedding_status")
   firstSeenAt     DateTime                     @default(now()) @map("first_seen_at") @db.Timestamptz(3)
   lastUpdatedAt   DateTime                     @default(now()) @updatedAt @map("last_updated_at") @db.Timestamptz(3)
-  embedding       Unsupported("vector(1024)")?
-  topicLabel      String?                      @map("topic_label") // NULL = belum diklasifikasi (PROMPT-CHATBOT-TOOLS-V2.md Task B)
-  repostEvents    RepostEvent[]
+  visualDescription            String?                      @map("visual_description")
+  visualDescriptionStatus      String                       @default("pending") @map("visual_description_status") // pending/done/failed/skipped
+  topicLabel                   String?                      @map("topic_label") // NULL = belum diklasifikasi (PROMPT-CHATBOT-TOOLS-V2.md Task B)
+  commentCount                 Int?                         @map("comment_count")
+  commentsStatus               String                       @default("pending") @map("comments_status") // pending/done/failed/skipped
+  commentSummary               String?                      @map("comment_summary")
+  comments                     Comment[]
+  repostEvents                 RepostEvent[]
 
   @@index([embeddingStatus])
   @@index([topicLabel])
+  @@index([commentsStatus])
   @@map("posts")
 }
 
@@ -212,6 +218,23 @@ model HashtagTopic {
 
   @@index([topicLabel])
   @@map("hashtag_topics")
+}
+
+model Comment {
+  id                 String    @id
+  postId             String    @map("post_id")
+  commenterUsername  String?   @map("commenter_username")
+  text               String?
+  likeCount          Int?      @map("like_count")
+  isRankedComment    Boolean?  @map("is_ranked_comment")
+  childCommentCount  Int?      @map("child_comment_count")
+  commentedAt        DateTime? @map("commented_at") @db.Timestamptz(3)
+  scrapedAt          DateTime  @default(now()) @map("scraped_at") @db.Timestamptz(3)
+  post               Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+  @@index([likeCount])
+  @@map("comments")
 }
 ```
 

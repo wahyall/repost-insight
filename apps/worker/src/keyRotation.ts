@@ -173,7 +173,7 @@ export async function checkAllKeysNonActive(): Promise<boolean> {
 /**
  * Selects next active key (least recently used) and returns ApifyService
  */
-export async function getNextActiveApifyKey(): Promise<{ service: RepostApifyService; keyId: number } | null> {
+export async function getNextActiveApifyKey(actorId?: string): Promise<{ service: RepostApifyService; keyId: number } | null> {
   // 1. Re-activate any expired exhausted keys first
   await autoReactivateExhaustedKeys();
 
@@ -190,7 +190,7 @@ export async function getNextActiveApifyKey(): Promise<{ service: RepostApifySer
       data: { lastUsedAt: new Date() },
     });
     return {
-      service: new RepostApifyService(keyRecord.token),
+      service: new RepostApifyService(keyRecord.token, actorId),
       keyId: keyRecord.id,
     };
   }
@@ -199,7 +199,7 @@ export async function getNextActiveApifyKey(): Promise<{ service: RepostApifySer
   const totalKeys = await prisma.apifyApiKey.count();
   if (totalKeys === 0 && process.env.APIFY_API_KEY) {
     return {
-      service: new RepostApifyService(process.env.APIFY_API_KEY),
+      service: new RepostApifyService(process.env.APIFY_API_KEY, actorId),
       keyId: 0,
     };
   }

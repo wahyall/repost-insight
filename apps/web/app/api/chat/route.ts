@@ -16,6 +16,11 @@ import {
   executeGetRelatedHashtags,
   executeRenderPostCard,
   executeRenderTable,
+  executeGetCommunitySentimentPulse,
+  executeDetectRecurringQuestions,
+  executeSearchComments,
+  executeGetMostLikedCommentsOverall,
+  executeGetCommentToRepostRatio,
 } from "@/lib/tools";
 
 export const dynamic = "force-dynamic";
@@ -237,6 +242,70 @@ function synthesizeResponseFromTools(toolCalls: any[]): string {
           : `Hashtag yang sering muncul bersama #${tc.args?.hashtag}:\n` +
               tags.slice(0, 10).map((t: any, i: number) => `${i + 1}. **#${t.tag}** (${t.count}x)`).join("\n")
       );
+    } else if (tc.name === "get_community_sentiment_pulse") {
+      if (tc.result?.pulse) {
+        parts.push(
+          `**Sintesis Sentimen & Keresahan Komunitas** (Sampel: ${tc.result.sampleSize} post):\n\n${tc.result.pulse}`
+        );
+      } else {
+        parts.push(tc.result?.note || "Belum ada data rangkuman komentar untuk dianalisis.");
+      }
+    } else if (tc.name === "detect_recurring_questions") {
+      if (tc.result?.recurringQuestionThemes) {
+        parts.push(
+          `**Tema Pertanyaan Berulang dari Audiens** (Sampel: ${tc.result.sampleSize} komentar):\n\n${tc.result.recurringQuestionThemes}`
+        );
+      } else {
+        parts.push(tc.result?.note || "Belum ada komentar pertanyaan yang ditemukan.");
+      }
+    } else if (tc.name === "search_comments") {
+      const results = tc.result?.results || [];
+      if (results.length === 0) {
+        parts.push(`Tidak ditemukan komentar yang cocok dengan pencarian "${tc.args?.query}".`);
+      } else {
+        parts.push(
+          `Ditemukan ${results.length} komentar terkait "${tc.args?.query}":\n` +
+            results
+              .slice(0, 10)
+              .map(
+                (c: any, i: number) =>
+                  `${i + 1}. **@${c.commenterUsername || "anonim"}** (${c.likeCount ?? 0} suka): "${c.text}"\n   _Kreator:_ @${c.postOwner || "anonim"}`
+              )
+              .join("\n")
+        );
+      }
+    } else if (tc.name === "get_most_liked_comments_overall") {
+      const results = tc.result?.results || [];
+      if (results.length === 0) {
+        parts.push("Belum ada komentar yang tersimpan di database.");
+      } else {
+        parts.push(
+          "Komentar paling banyak disukai di seluruh database:\n" +
+            results
+              .slice(0, 10)
+              .map(
+                (c: any, i: number) =>
+                  `${i + 1}. **[${c.likeCount} suka]** @${c.commenterUsername || "anonim"}: "${c.text}" (Post @${c.postOwner || "anonim"})`
+              )
+              .join("\n")
+        );
+      }
+    } else if (tc.name === "get_comment_to_repost_ratio") {
+      const results = tc.result?.results || [];
+      if (results.length === 0) {
+        parts.push("Belum ada data untuk menghitung rasio komentar terhadap repost.");
+      } else {
+        parts.push(
+          "Postingan dengan rasio komentar terhadap repost tertinggi (konten pemicu diskusi):\n" +
+            results
+              .slice(0, 10)
+              .map(
+                (r: any, i: number) =>
+                  `${i + 1}. **@${r.ownerUsername || "anonim"}** — Rasio: **${r.ratio}** (${r.commentCount} komentar vs ${r.repostCount} repost)\n   "${(r.captionText || "").slice(0, 100)}..."`
+              )
+              .join("\n")
+        );
+      }
     }
   }
 
@@ -311,12 +380,18 @@ ROUTING TOOL — IKUTI DENGAN TEPAT:
 12. Post serupa dari satu post acuan ('cari yang mirip ini') → find_similar_posts(postId) — JANGAN pakai semantic_search dengan kata kunci baru untuk ini
 13. Hashtag yang sering muncul BERSAMA satu hashtag → get_related_hashtags(hashtag)
 14. Tampilkan post sebagai kartu visual inline → render_post_card (data dari semantic_search/get_post_detail/find_similar_posts, JANGAN mengarang); tampilkan data multi-kolom sebagai tabel → render_table (data dari tool lain, JANGAN mengarang)
+15. Keresahan, kebutuhan, atau sentimen komunitas yang berulang lintas banyak post → get_community_sentiment_pulse. Ingat: ini SINTESIS KUALITATIF dari sampel comment_summary terbaru, BUKAN statistik pasti (jangan klaim persentase/peringkat pasti, pakai get_topic_distribution untuk data statistik pasti).
+16. Pertanyaan berulang dari audiens untuk ide konten yang menjawab kebutuhan audiens → detect_recurring_questions
+17. Pencarian teks komentar mentah secara spesifik (kutipan literal, mencari komentar yang menyebut kata tertentu) → search_comments(query)
+18. Komentar paling viral / paling banyak disukai di SELURUH database (lintas semua post) → get_most_liked_comments_overall
+19. Membandingkan konten yang memicu diskusi vs cuma dibagikan (rasio komentar terhadap repost) → get_comment_to_repost_ratio
 
 POLA MULTI-TOOL (gunakan sequence ini):
 - "topik paling sering dibahas, kasih contoh post-nya" → get_topic_distribution → semantic_search(topik teratas) → get_post_detail(salah satu hasil)
 - "grafik topik paling sering" → get_topic_distribution(topN=10) → render_chart(bar, data dari topics[].topicLabel & occurrenceCount)
 - "grafik akun terpopuler" → query_aggregate(top_accounts) → render_chart(bar, data dari repostCount)
 - "grafik aktivitas repost" → query_aggregate(activity_timeline, limit=30) → render_chart(line/area)
+- "apa keresahan audiens, kasih contoh komentarnya" → get_community_sentiment_pulse → search_comments(kata kunci terkait)
 
 BERPIKIR KRITIS & BERWAWASAN LUAS — ini SIKAP DEFAULT di HAMPIR SEMUA jawaban, bukan cuma dipicu untuk pertanyaan yang kelihatan "interpretatif":
 - Angka/statistik/peringkat WAJIB tetap berbasis hasil tool — dilarang mengarang, ini tidak berubah dan tidak bisa dinegosiasi.
@@ -332,7 +407,7 @@ FORMAT JAWABAN — sesuaikan dengan isi, jangan selalu sama bentuknya:
 - Insight dengan beberapa aspek berbeda → subjudul singkat per aspek.
 - Merangkum banyak post/komentar → kelompokkan per tema, jangan daftar mentah.
 - Sertakan angka konkret dari hasil tool untuk mendukung klaim (jumlah repost, jumlah follower unik, dst) — hindari kata "banyak"/"sering" tanpa angka pendukung.
-- Kalau menyebut visual_description atau rangkuman komentar, ingat itu hasil analisis AI, bukan fakta mentah — sebut sumbernya kalau relevan ("berdasarkan analisis visual AI...").
+- Kalau menyebut visual_description atau rangkuman komentar, ingat itu hasil analisis AI, bukan fakta mentah — sebut sumbernya kalau relevan ("berdasarkan analisis visual AI...", "berdasarkan rangkuman komentar AI...").
 
 ATURAN ANTI-HALUSINASI (WAJIB):
 - DILARANG mengarang, mengestimasi, atau mengasumsikan angka/persentase tanpa data dari tool.
@@ -344,7 +419,10 @@ MEMBACA HASIL TOOL:
 - get_topic_distribution: percentageOfAll dihitung dari total SEMUA topik terklasifikasi; coverageNote hanya muncul jika cakupan di bawah 95% (kalau tidak ada coverageNote, artinya cakupan sudah >= 95% dan angkanya mewakili hampir seluruh database) — jika coverageNote ADA, sebutkan angka cakupan itu di jawaban dan jangan mengklaim hasilnya mewakili 100% database; topik "Lainnya" berisi hashtag generik/algoritmik (fyp, viral, reels, dst) — bukan topik nyata; topik "Tidak terklasifikasi" berisi post yang genuinely tanpa informasi
 - analyze_topics: distribusi per-hashtag literal (bukan topik semantik), percentageOfAll dari total SEMUA hashtag
 - query_aggregate summary: breakdown status scraping (done/pending/in_progress/failed) dan embeddingCoveragePct
-- get_post_detail: commentSummary/topComments bisa bernilai null/kosong jika fitur rangkuman komentar belum tersedia untuk post tersebut — jangan mengarang isinya`,
+- get_post_detail: commentSummary/topComments berisi rangkuman AI dan komentar paling disukai untuk post tersebut
+- get_community_sentiment_pulse: sintesis kualitatif keresahan audiens dari sampel post terbaru — selalu tandai bahwa ini berasal dari sampel kualitatif, bukan kalkulasi seluruh database
+- get_comment_to_repost_ratio: ratio tinggi = konten memicu banyak obrolan/diskusi/debat; ratio rendah = konten murni disetujui dan dibagikan tanpa banyak komentar
+- search_comments: kutipan teks asli komentar audiens; perhatikan jumlah suka pada tiap komentar`,
       },
       ...history,
       { role: "user", content: userMessage },
@@ -442,6 +520,16 @@ MEMBACA HASIL TOOL:
         } else if (call.name === "render_table") {
           toolResult = executeRenderTable(call.args?.headers ?? [], call.args?.rows ?? []);
           tablesToRender.push(toolResult);
+        } else if (call.name === "get_community_sentiment_pulse") {
+          toolResult = await executeGetCommunitySentimentPulse(call.args?.sampleSize);
+        } else if (call.name === "detect_recurring_questions") {
+          toolResult = await executeDetectRecurringQuestions(call.args?.sampleSize);
+        } else if (call.name === "search_comments") {
+          toolResult = await executeSearchComments(call.args?.query, call.args?.limit);
+        } else if (call.name === "get_most_liked_comments_overall") {
+          toolResult = await executeGetMostLikedCommentsOverall(call.args?.limit);
+        } else if (call.name === "get_comment_to_repost_ratio") {
+          toolResult = await executeGetCommentToRepostRatio(call.args?.limit);
         }
 
         toolCallsLog.push({ name: call.name, args: call.args, result: toolResult });

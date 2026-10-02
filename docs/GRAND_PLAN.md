@@ -121,6 +121,20 @@ Spesifikasi lengkap: `VISUAL_DESCRIPTION.md`.
 
 **Definition of Done**: pengguna dapat melihat dan mencari seluruh repost yang dikelompokkan per follower secara terstruktur, cepat, dan responsif.
 
+## Fase 11 — Comment Analysis (Effort: Sedang)
+
+Spesifikasi lengkap: `F11-COMMENT-ANALYSIS-COMPLETE.md`.
+
+- [x] Tabel `comments` & kolom `posts.comments_status`/`comment_summary`/`comment_count` terpasang di Postgres
+- [x] Script npm standalone `npm run scrape:comments` via `apps/worker/src/commentScraperOnce.ts`
+- [x] Logika `scrapeCommentsForPost()` dengan rotasi multi API-key Apify & auto-skip post 0 komentar
+- [x] Deteksi engagement-bait `filterLowSignalComments()` & pengurutan popularitas manual sebelum rangkuman LLM
+- [x] Re-embed otomatis (`embedding_status = 'pending'`) saat `comment_summary` terisi
+- [x] 5 Chatbot Tools komentar: `get_community_sentiment_pulse`, `detect_recurring_questions`, `search_comments`, `get_most_liked_comments_overall`, `get_comment_to_repost_ratio`
+- [x] Integrasi `get_post_detail` membawa `commentSummary` & `topComments`
+
+**Definition of Done**: komentar di-scrape secara mandiri per post unik via actor Apify, dirangkum oleh LLM bebas bait, terintegrasi ke embedding RAG, dan dapat dianalisis secara kualitatif maupun kuantitatif lewat asisten chat.
+
 ## Open Items / Hal yang Masih Bisa Berubah
 
 - Pilihan final CopilotKit vs Vercel AI SDK murni untuk chat UI — diputuskan saat mulai Fase 6.

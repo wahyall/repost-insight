@@ -13,6 +13,7 @@ import { OllamaEmbeddingService } from "./ollamaClient";
 import { startEmbeddingLoop } from "./embeddingLoop";
 import { reclassifyHashtagTopics } from "./hashtagTopics";
 import { classifyPostTopics } from "./postTopics";
+import { startCommentScrapeLoop } from "./commentLoop";
 
 const shouldStopRef = { stop: false };
 
@@ -108,13 +109,20 @@ async function main() {
   const embeddingService = new OllamaEmbeddingService();
 
   // Run scraping loop, embedding pipeline, hashtag topic classification,
-  // and post topic classification concurrently
-  await Promise.all([
+  // post topic classification, and optionally comment scraper loop
+  const workers: Promise<void>[] = [
     startScrapeLoop(getActiveApifyService, shouldStopRef),
     startEmbeddingLoop(embeddingService, shouldStopRef),
     startHashtagTopicLoop(shouldStopRef),
     startPostTopicLoop(shouldStopRef),
-  ]);
+  ];
+
+  if (process.env.ENABLE_COMMENT_WORKER === "true") {
+    console.log("[Worker] ENABLE_COMMENT_WORKER=true: Menyertakan comment scraping loop.");
+    workers.push(startCommentScrapeLoop(shouldStopRef));
+  }
+
+  await Promise.all(workers);
 }
 
 main().catch((err) => {

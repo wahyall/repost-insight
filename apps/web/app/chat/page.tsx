@@ -186,6 +186,9 @@ export default function ChatPage() {
     "Siapa saja 5 akun yang paling sering di-repost oleh follower?",
     "Tampilkan grafik bar untuk 5 hashtag terpopuler",
     "Cari repost yang membahas topik sedekah, parenting, atau keluarga",
+    "Apa keresahan atau harapan audiens yang paling sering muncul di komentar?",
+    "Pertanyaan apa yang paling sering diajukan audiens di kolom komentar?",
+    "Konten mana yang paling banyak memicu diskusi (rasio komentar tinggi)?",
   ];
 
   return (

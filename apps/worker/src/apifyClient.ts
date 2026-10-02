@@ -106,6 +106,31 @@ export class RepostApifyService {
   }
 
   /**
+   * Run any actor and wait for it to complete, returning raw items.
+   * Useful for synchronous/direct scraper runs like louisdeconinck/instagram-comments-scraper (F11).
+   */
+  async callActor(
+    actorId: string,
+    input: Record<string, unknown>,
+    options?: { timeoutSecs?: number; maxItems?: number }
+  ): Promise<any[]> {
+    const run = await this.client.actor(actorId).call(input, {
+      timeout: options?.timeoutSecs ?? 120,
+      maxItems: options?.maxItems,
+    });
+
+    if (!run || run.status !== "SUCCEEDED") {
+      throw new Error(`Apify actor run [${actorId}] gagal atau status bukan SUCCEEDED: ${run?.status || "UNKNOWN"}`);
+    }
+
+    const dataset = await this.client.dataset(run.defaultDatasetId).listItems({
+      limit: options?.maxItems ?? 100,
+    });
+
+    return dataset.items as any[];
+  }
+
+  /**
    * Check current status of an actor run (used for startup reconciliation & monitoring)
    */
   async getRunStatus(runId: string): Promise<ApifyRunResult> {

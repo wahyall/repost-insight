@@ -420,13 +420,13 @@ topComments: post.comments?.map((c) => ({ text: c.text, likeCount: c.likeCount }
 
 ## 9. Kriteria Selesai (Definition of Done)
 
-- [ ] Tabel `comments` + kolom `posts.comments_status`/`comment_summary` terpasang
-- [ ] `scrapeCommentsForPost()` berjalan via infrastruktur rotasi multi API-key yang sama dengan F2/F3
-- [ ] Post `comment_count = 0` otomatis `skipped` tanpa memanggil actor
-- [ ] Komentar diurutkan ulang manual di kode (bukan mengandalkan actor) sebelum dipakai rangkuman
-- [ ] `comment_summary` ikut memicu re-embed (`embedding_status = pending`)
-- [ ] Kelima tool (`get_community_sentiment_pulse`, `detect_recurring_questions`, `search_comments`, `get_most_liked_comments_overall`, `get_comment_to_repost_ratio`) terdaftar di `CHATBOT_TOOLS` dan berfungsi
-- [ ] `get_post_detail` (kalau sudah ada) ikut membawa `commentSummary` dan top comments
-- [ ] `filterLowSignalComments()` terpasang di alur rangkuman — uji pakai post bertipe "komen X nanti aku kirim link", pastikan komentar duplikat (mis. "Alasanku" berulang) tidak muncul di `comment_summary`, tapi tetap tersimpan utuh di tabel `comments`
-- [ ] Uji manual: post dengan komentar banyak, post tanpa komentar, post yang sudah dihapus/private
-- [ ] Uji manual: tanya chatbot pertanyaan yang relevan ke tiap tool baru, pastikan tool yang tepat terpanggil (terutama bedakan `get_community_sentiment_pulse` vs `get_topic_distribution` — kualitatif-sampel vs kuantitatif-whole-database)
+- [x] Tabel `comments` + kolom `posts.comments_status`/`comment_summary` terpasang
+- [x] `scrapeCommentsForPost()` berjalan via infrastruktur rotasi multi API-key yang sama dengan F2/F3
+- [x] Post `comment_count = 0` otomatis `skipped` tanpa memanggil actor
+- [x] Komentar diurutkan ulang manual di kode (bukan mengandalkan actor) sebelum dipakai rangkuman
+- [x] `comment_summary` ikut memicu re-embed (`embedding_status = pending`)
+- [x] Kelima tool (`get_community_sentiment_pulse`, `detect_recurring_questions`, `search_comments`, `get_most_liked_comments_overall`, `get_comment_to_repost_ratio`) terdaftar di `CHATBOT_TOOLS` dan berfungsi
+- [x] `get_post_detail` (kalau sudah ada) ikut membawa `commentSummary` dan top comments
+- [x] `filterLowSignalComments()` terpasang di alur rangkuman — uji pakai post bertipe "komen X nanti aku kirim link", pastikan komentar duplikat (mis. "Alasanku" berulang) tidak muncul di `comment_summary`, tapi tetap tersimpan utuh di tabel `comments`
+- [x] Uji manual: post dengan komentar banyak, post tanpa komentar, post yang sudah dihapus/private
+- [x] Uji manual: tanya chatbot pertanyaan yang relevan ke tiap tool baru, pastikan tool yang tepat terpanggil (terutama bedakan `get_community_sentiment_pulse` vs `get_topic_distribution` — kualitatif-sampel vs kuantitatif-whole-database)

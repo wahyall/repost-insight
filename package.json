@@ -11,6 +11,7 @@
     "build": "npm --workspace=@repostinsight/web run build",
     "start": "npm --workspace=@repostinsight/web run start",
     "worker": "npm --workspace=@repostinsight/worker run start",
+    "scrape:comments": "npm --workspace=@repostinsight/worker run scrape:comments --",
     "db:migrate": "npm --workspace=@repostinsight/db run migrate",
     "db:generate": "npm --workspace=@repostinsight/db run generate",
     "db:studio": "npm --workspace=@repostinsight/db run studio",

@@ -55,6 +55,19 @@ export async function saveScrapedReposts(followerUsername: string, items: ApifyA
       }
     }
 
+    const commentCount =
+      typeof item.comment_count === "number"
+        ? item.comment_count
+        : typeof item.commentsCount === "number"
+        ? item.commentsCount
+        : typeof (item as any).commentCount === "number"
+        ? (item as any).commentCount
+        : typeof (item as any).comments_count === "number"
+        ? (item as any).comments_count
+        : null;
+    const commentsDisabled = Boolean((item as any).comments_disabled);
+    const initialCommentsStatus = (commentCount === 0 || commentsDisabled) ? "skipped" : "pending";
+
     // 1. Upsert Post (find-or-create, FR-4.1–4.3)
     const isNewPost = !(await prisma.post.findUnique({ where: { id: postId }, select: { id: true } }));
     await prisma.post.upsert({
@@ -72,6 +85,8 @@ export async function saveScrapedReposts(followerUsername: string, items: ApifyA
         rawJson: item as object,
         embeddingStatus: "pending",
         visualDescriptionStatus: "pending",
+        commentCount,
+        commentsStatus: initialCommentsStatus,
       },
       update: {
         code: code ?? undefined,
@@ -81,6 +96,7 @@ export async function saveScrapedReposts(followerUsername: string, items: ApifyA
         mediaType: mediaType ?? undefined,
         likeCount: likeCount ?? undefined,
         playCount: playCount ?? undefined,
+        commentCount: commentCount ?? undefined,
         rawJson: item as object,
       },
     });

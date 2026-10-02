@@ -152,9 +152,27 @@ CREATE TABLE posts (
   first_seen_at     timestamptz NOT NULL DEFAULT now(),
   last_updated_at   timestamptz NOT NULL DEFAULT now(),
   visual_description        text,               -- lihat VISUAL_DESCRIPTION.md (F10)
-  visual_description_status text NOT NULL DEFAULT 'pending' -- pending/done/failed/skipped
-  topic_label               text                -- NULL = belum diklasifikasi; diisi worker via classifyPostTopics (jalur cepat hashtag-mapping atau fallback klasifikasi isi konten), lihat docs/PROMPT-CHATBOT-TOOLS-V2.md Task B
+  visual_description_status text NOT NULL DEFAULT 'pending', -- pending/done/failed/skipped
+  topic_label               text,               -- NULL = belum diklasifikasi; diisi worker via classifyPostTopics (jalur cepat hashtag-mapping atau fallback klasifikasi isi konten), lihat docs/PROMPT-CHATBOT-TOOLS-V2.md Task B
+  comment_count             int,
+  comments_status           text NOT NULL DEFAULT 'pending', -- pending/done/failed/skipped (F11)
+  comment_summary           text                -- rangkuman LLM dari komentar audiens (F11)
 );
+
+-- Komentar post original (F11)
+CREATE TABLE comments (
+  id                   text PRIMARY KEY,        -- dari field pk actor
+  post_id              text NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  commenter_username   text,                     -- dari user.username, nullable
+  text                 text,
+  like_count           int,
+  is_ranked_comment    boolean,
+  child_comment_count  int,
+  commented_at         timestamptz,
+  scraped_at           timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_comments_post_id ON comments(post_id);
+CREATE INDEX idx_comments_like_count ON comments(like_count);
 
 -- Relasi many-to-many: follower mana me-repost post apa
 CREATE TABLE repost_events (
