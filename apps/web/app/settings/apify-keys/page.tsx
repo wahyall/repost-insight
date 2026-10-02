@@ -14,6 +14,7 @@ import {
   DollarSign,
   ArrowLeft,
   ShieldAlert,
+  Gauge,
 } from "lucide-react";
 
 interface ApifyKeyItem {
@@ -33,6 +34,11 @@ export default function ApifyKeysSettingsPage() {
   const [keys, setKeys] = useState<ApifyKeyItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
+  const [checkingId, setCheckingId] = useState<number | null>(null);
+  const [actionFeedback, setActionFeedback] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
 
@@ -57,6 +63,37 @@ export default function ApifyKeysSettingsPage() {
   useEffect(() => {
     fetchKeys();
   }, []);
+
+  const handleCheckLimits = async (id: number, labelStr: string | null) => {
+    setCheckingId(id);
+    setActionFeedback(null);
+    try {
+      const res = await fetch(`/api/apify-keys/${id}/check`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setActionFeedback({
+          type: "error",
+          message: data.error || `Gagal memeriksa limit API Key "${labelStr || `#${id}`}".`,
+        });
+      } else {
+        setActionFeedback({
+          type: "success",
+          message: data.message || `Limit API Key "${labelStr || `#${id}`}" berhasil diperbarui.`,
+        });
+      }
+      // Selalu refresh data agar tabel sinkron dengan DB & status terbaru
+      fetchKeys();
+    } catch (err) {
+      setActionFeedback({
+        type: "error",
+        message: "Terjadi kesalahan jaringan saat memeriksa limit ke server.",
+      });
+    } finally {
+      setCheckingId(null);
+    }
+  };
 
   const handleAddKey = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -217,6 +254,33 @@ export default function ApifyKeysSettingsPage() {
         </form>
       </div>
 
+      {/* Action Feedback Message */}
+      {actionFeedback && (
+        <div
+          className={`mb-6 p-4 rounded-xl border text-xs flex items-center justify-between shadow-sm transition ${
+            actionFeedback.type === "success"
+              ? "bg-emerald-50 border-emerald-200 text-emerald-900"
+              : "bg-rose-50 border-rose-200 text-rose-900"
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            {actionFeedback.type === "success" ? (
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 flex-shrink-0" />
+            ) : (
+              <AlertTriangle className="w-5 h-5 text-rose-600 flex-shrink-0" />
+            )}
+            <span className="font-medium text-xs leading-relaxed">{actionFeedback.message}</span>
+          </div>
+          <button
+            onClick={() => setActionFeedback(null)}
+            className="text-slate-400 hover:text-slate-600 text-sm font-bold ml-3 px-1.5 py-0.5 rounded hover:bg-slate-100 transition"
+            title="Tutup pesan"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Keys List Table */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
         <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
@@ -287,9 +351,9 @@ export default function ApifyKeysSettingsPage() {
                           </span>
                         )}
                       </td>
-                      <td className="py-3 px-4 min-w-[140px]">
+                      <td className="py-3 px-4 min-w-[150px]">
                         <div className="flex items-center justify-between text-[11px] mb-1">
-                          <span>${k.monthlyUsageUsd.toFixed(2)}</span>
+                          <span className="font-medium text-slate-800">${k.monthlyUsageUsd.toFixed(2)}</span>
                           <span className="text-slate-400">/ ${k.maxMonthlyUsageUsd.toFixed(2)}</span>
                         </div>
                         <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
@@ -300,6 +364,11 @@ export default function ApifyKeysSettingsPage() {
                             style={{ width: `${usagePercent}%` }}
                           />
                         </div>
+                        {k.lastCheckedAt && (
+                          <div className="text-[10px] text-slate-400 mt-1">
+                            Dicek: {new Date(k.lastCheckedAt).toLocaleString("id-ID", { dateStyle: "short", timeStyle: "short" })}
+                          </div>
+                        )}
                       </td>
                       <td className="py-3 px-4 text-slate-500">
                         {k.usageCycleEndsAt ? new Date(k.usageCycleEndsAt).toLocaleDateString("id-ID") : "—"}
@@ -308,13 +377,25 @@ export default function ApifyKeysSettingsPage() {
                         {k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleTimeString("id-ID") : "Belum pernah"}
                       </td>
                       <td className="py-3 px-4 text-center">
-                        <button
-                          onClick={() => handleDelete(k.id)}
-                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
-                          title="Hapus Key"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        <div className="flex items-center justify-center gap-1.5">
+                          <button
+                            onClick={() => handleCheckLimits(k.id, k.label)}
+                            disabled={checkingId === k.id}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-amber-700 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg transition disabled:opacity-50"
+                            title="Periksa sisa kuota dan limit Apify sekarang"
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${checkingId === k.id ? "animate-spin text-amber-600" : "text-amber-600"}`} />
+                            <span>{checkingId === k.id ? "Mengecek..." : "Cek Limit"}</span>
+                          </button>
+                          <button
+                            onClick={() => handleDelete(k.id)}
+                            disabled={checkingId === k.id}
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition disabled:opacity-50"
+                            title="Hapus Key"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
