@@ -37,9 +37,11 @@ model Post {
   embedding                    Unsupported("vector(1024)")?
   visualDescription            String?                      @map("visual_description")
   visualDescriptionStatus      String                       @default("pending") @map("visual_description_status") // pending/done/failed/skipped
+  topicLabel                   String?                      @map("topic_label") // NULL = belum diklasifikasi; lihat docs/PROMPT-CHATBOT-TOOLS-V2.md Task B
   repostEvents                 RepostEvent[]
 
   @@index([embeddingStatus])
+  @@index([topicLabel])
   @@map("posts")
 }
 

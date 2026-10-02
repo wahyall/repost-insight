@@ -8,6 +8,14 @@ import {
   executeRenderChart,
   executeGetTopicDistribution,
   executeGetPostDetail,
+  executeGetSharedInterestClusters,
+  executeSuggestCollaborationCandidates,
+  executeAnalyzeHighPerformingHooks,
+  executeGetFollowerOverlap,
+  executeFindSimilarPosts,
+  executeGetRelatedHashtags,
+  executeRenderPostCard,
+  executeRenderTable,
 } from "@/lib/tools";
 
 export const dynamic = "force-dynamic";
@@ -177,6 +185,58 @@ function synthesizeResponseFromTools(toolCalls: any[]): string {
               .join("\n")
         );
       }
+    } else if (tc.name === "get_topic_distribution") {
+      const topics = tc.result?.topics || [];
+      if (topics.length === 0) {
+        parts.push("Belum ada topik terklasifikasi.");
+      } else {
+        const cover = tc.result?.coverageNote ? `\n_${tc.result.coverageNote}_` : "";
+        parts.push(
+          "Distribusi topik repost:\n" +
+            topics
+              .slice(0, 10)
+              .map((t: any, i: number) => `${i + 1}. **${t.topicLabel}** — ${t.occurrenceCount} repost (${t.percentageOfAll}%)`)
+              .join("\n") + cover
+        );
+      }
+    } else if (tc.name === "get_shared_interest_clusters") {
+      const clusters = tc.result?.clusters || [];
+      parts.push(
+        clusters.length === 0
+          ? "Belum ada klaster minat yang memenuhi ukuran minimum."
+          : "Klaster minat follower:\n" +
+              clusters.map((c: any, i: number) => `${i + 1}. **${c.topic}** — ${c.clusterSize} follower`).join("\n")
+      );
+    } else if (tc.name === "suggest_collaboration_candidates") {
+      const cands = tc.result?.candidates || [];
+      parts.push(
+        cands.length === 0
+          ? `Tidak ditemukan kandidat kolaborasi untuk @${tc.result?.targetOwner}.`
+          : `Kandidat kolaborasi untuk @${tc.result?.targetOwner}:\n` +
+              cands.slice(0, 10).map((c: any, i: number) => `${i + 1}. **@${c.ownerUsername}** — overlap ${c.overlapCount} follower`).join("\n")
+      );
+    } else if (tc.name === "analyze_high_performing_hooks") {
+      parts.push(tc.result?.patterns || "Belum ada data caption untuk dianalisis.");
+    } else if (tc.name === "get_follower_overlap") {
+      parts.push(
+        `Irisan follower @${tc.args?.ownerA} & @${tc.args?.ownerB}: **${tc.result?.overlapCount ?? 0}** follower.`
+      );
+    } else if (tc.name === "find_similar_posts") {
+      const sims = tc.result?.similarPosts || [];
+      parts.push(
+        sims.length === 0
+          ? "Tidak ditemukan post serupa."
+          : `Post serupa:\n` +
+              sims.slice(0, 5).map((p: any, i: number) => `${i + 1}. **@${p.ownerUsername || "anonim"}** (kemiripan ${p.similarity})`).join("\n")
+      );
+    } else if (tc.name === "get_related_hashtags") {
+      const tags = tc.result?.relatedHashtags || [];
+      parts.push(
+        tags.length === 0
+          ? `Tidak ada hashtag yang sering muncul bersama #${tc.args?.hashtag}.`
+          : `Hashtag yang sering muncul bersama #${tc.args?.hashtag}:\n` +
+              tags.slice(0, 10).map((t: any, i: number) => `${i + 1}. **#${t.tag}** (${t.count}x)`).join("\n")
+      );
     }
   }
 
@@ -244,6 +304,13 @@ ROUTING TOOL — IKUTI DENGAN TEPAT:
 5. Ingin melihat DETAIL SATU post spesifik (hasil semantic_search) — caption lengkap, siapa saja yang repost, deskripsi visual, rangkuman komentar jika ada → get_post_detail(postId)
 6. GRAFIK/VISUALISASI → PERTAMA panggil tool data yang sesuai, KEMUDIAN render_chart dengan data dari tool tersebut
 7. Jangan tampilkan tag XML <tool_call> kepada pengguna
+8. Segmentasi follower per minat dominan (programming event per-segmen, ceruk audiens) → get_shared_interest_clusters
+9. Kandidat kolaborasi/co-host untuk suatu akun (audiens overlap) → suggest_collaboration_candidates
+10. Analisis gaya caption/hook konten terbaik (panduan content creator) → analyze_high_performing_hooks
+11. Irisan follower dua akun ('yang suka X dan Y sekaligus') → get_follower_overlap(ownerA, ownerB)
+12. Post serupa dari satu post acuan ('cari yang mirip ini') → find_similar_posts(postId) — JANGAN pakai semantic_search dengan kata kunci baru untuk ini
+13. Hashtag yang sering muncul BERSAMA satu hashtag → get_related_hashtags(hashtag)
+14. Tampilkan post sebagai kartu visual inline → render_post_card (data dari semantic_search/get_post_detail/find_similar_posts, JANGAN mengarang); tampilkan data multi-kolom sebagai tabel → render_table (data dari tool lain, JANGAN mengarang)
 
 POLA MULTI-TOOL (gunakan sequence ini):
 - "topik paling sering dibahas, kasih contoh post-nya" → get_topic_distribution → semantic_search(topik teratas) → get_post_detail(salah satu hasil)
@@ -274,7 +341,7 @@ ATURAN ANTI-HALUSINASI (WAJIB):
 
 MEMBACA HASIL TOOL:
 - semantic_search: repostCount = jumlah followers yang me-repost; visualDescription = deskripsi gambar/video dari AI; combinedScore = gabungan relevansi + kebaruan data (recency dihitung dari kapan data di-scrape, bukan tanggal asli post diunggah)
-- get_topic_distribution: percentageOfAll dihitung dari total SEMUA topik terklasifikasi; coveragePct = persentase repost yang tercakup analisis (post tanpa hashtag / hashtag belum diklasifikasikan tidak ikut terhitung) — jika coveragePct di bawah 90, sebutkan angka cakupan itu di jawaban dan jangan mengklaim hasilnya mewakili 100% database; topik "Lainnya" berisi hashtag generik/algoritmik (fyp, viral, reels, dst) — bukan topik nyata
+- get_topic_distribution: percentageOfAll dihitung dari total SEMUA topik terklasifikasi; coverageNote hanya muncul jika cakupan di bawah 95% (kalau tidak ada coverageNote, artinya cakupan sudah >= 95% dan angkanya mewakili hampir seluruh database) — jika coverageNote ADA, sebutkan angka cakupan itu di jawaban dan jangan mengklaim hasilnya mewakili 100% database; topik "Lainnya" berisi hashtag generik/algoritmik (fyp, viral, reels, dst) — bukan topik nyata; topik "Tidak terklasifikasi" berisi post yang genuinely tanpa informasi
 - analyze_topics: distribusi per-hashtag literal (bukan topik semantik), percentageOfAll dari total SEMUA hashtag
 - query_aggregate summary: breakdown status scraping (done/pending/in_progress/failed) dan embeddingCoveragePct
 - get_post_detail: commentSummary/topComments bisa bernilai null/kosong jika fitur rangkuman komentar belum tersedia untuk post tersebut — jangan mengarang isinya`,
@@ -284,6 +351,8 @@ MEMBACA HASIL TOOL:
     ];
 
     let chartToRender: any = null;
+    const tablesToRender: any[] = [];
+    const postCardsToRender: any[] = [];
     const toolCallsLog: any[] = [];
     let assistantMessage: any = null;
 
@@ -349,9 +418,30 @@ MEMBACA HASIL TOOL:
           toolResult = await executeGetTopicDistribution(call.args?.topN);
         } else if (call.name === "get_post_detail") {
           toolResult = await executeGetPostDetail(call.args?.postId);
+        } else if (call.name === "get_shared_interest_clusters") {
+          toolResult = await executeGetSharedInterestClusters(call.args?.minClusterSize ?? 3);
+        } else if (call.name === "suggest_collaboration_candidates") {
+          toolResult = await executeSuggestCollaborationCandidates(
+            call.args?.ownerUsername,
+            call.args?.limit ?? 10
+          );
+        } else if (call.name === "analyze_high_performing_hooks") {
+          toolResult = await executeAnalyzeHighPerformingHooks(call.args?.sampleSize ?? 20);
+        } else if (call.name === "get_follower_overlap") {
+          toolResult = await executeGetFollowerOverlap(call.args?.ownerA, call.args?.ownerB);
+        } else if (call.name === "find_similar_posts") {
+          toolResult = await executeFindSimilarPosts(call.args?.postId, call.args?.limit ?? 5);
+        } else if (call.name === "get_related_hashtags") {
+          toolResult = await executeGetRelatedHashtags(call.args?.hashtag, call.args?.limit ?? 10);
         } else if (call.name === "render_chart") {
           toolResult = executeRenderChart(call.args?.chartType, call.args?.title, call.args?.data);
           chartToRender = toolResult;
+        } else if (call.name === "render_post_card") {
+          toolResult = executeRenderPostCard(call.args ?? { id: "" });
+          postCardsToRender.push(toolResult);
+        } else if (call.name === "render_table") {
+          toolResult = executeRenderTable(call.args?.headers ?? [], call.args?.rows ?? []);
+          tablesToRender.push(toolResult);
         }
 
         toolCallsLog.push({ name: call.name, args: call.args, result: toolResult });
@@ -384,6 +474,8 @@ MEMBACA HASIL TOOL:
     return NextResponse.json({
       reply: finalContent,
       chart: chartToRender,
+      tables: tablesToRender,
+      postCards: postCardsToRender,
       toolCalls: toolCallsLog,
     });
   } catch (err: unknown) {

@@ -12,6 +12,8 @@ import {
   User,
   ArrowLeft,
   BarChart3,
+  Table as TableIcon,
+  LayoutGrid,
 } from "lucide-react";
 import {
   BarChart,
@@ -36,11 +38,29 @@ interface ChartData {
   data: { name: string; value: number }[];
 }
 
+interface TableData {
+  isTable: boolean;
+  headers: string[];
+  rows: (string | number)[][];
+}
+
+interface PostCardData {
+  isPostCard: boolean;
+  id: string;
+  thumbnailUrl?: string | null;
+  captionText?: string | null;
+  ownerUsername?: string | null;
+  likeCount?: number | null;
+  repostCount?: number | null;
+}
+
 interface MessageItem {
   id?: number;
   role: "user" | "assistant" | "system";
   content: string;
   chart?: ChartData | null;
+  tables?: TableData[];
+  postCards?: PostCardData[];
   toolCalls?: any;
   createdAt?: string;
 }
@@ -61,10 +81,16 @@ export default function ChatPage() {
         // Parse any charts stored in toolCalls
         const mapped = (json.messages || []).map((m: any) => {
           let chart: ChartData | null = null;
+          const tables: TableData[] = [];
+          const postCards: PostCardData[] = [];
           if (Array.isArray(m.toolCalls)) {
             const chartCall = m.toolCalls.find((tc: any) => tc.name === "render_chart");
             if (chartCall?.result?.isChart) {
               chart = chartCall.result;
+            }
+            for (const tc of m.toolCalls) {
+              if (tc.name === "render_table" && tc.result?.isTable) tables.push(tc.result);
+              if (tc.name === "render_post_card" && tc.result?.isPostCard) postCards.push(tc.result);
             }
           }
           return {
@@ -72,6 +98,8 @@ export default function ChatPage() {
             role: m.role,
             content: m.content,
             chart,
+            tables,
+            postCards,
             createdAt: m.createdAt,
           };
         });
@@ -117,6 +145,8 @@ export default function ChatPage() {
             role: "assistant",
             content: data.reply,
             chart: data.chart,
+            tables: data.tables || [],
+            postCards: data.postCards || [],
             toolCalls: data.toolCalls,
           },
         ]);
@@ -304,6 +334,87 @@ export default function ChatPage() {
                         )}
                       </ResponsiveContainer>
                     </div>
+                  </div>
+                )}
+
+                {/* Render Tables Inline (render_table) */}
+                {msg.tables && msg.tables.length > 0 && (
+                  <div className="mt-4 pt-3 border-t border-slate-100 space-y-3">
+                    {msg.tables.map((tbl, ti) => (
+                      <div key={ti} className="overflow-x-auto">
+                        <div className="flex items-center gap-1.5 font-bold text-slate-900 mb-2">
+                          <TableIcon className="w-4 h-4 text-amber-600" />
+                          Tabel Data
+                        </div>
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr>
+                              {tbl.headers.map((h, hi) => (
+                                <th
+                                  key={hi}
+                                  className="px-2 py-1.5 text-[11px] font-semibold text-slate-600 bg-slate-50 border border-slate-200"
+                                >
+                                  {h}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {tbl.rows.slice(0, 15).map((row, ri) => (
+                              <tr key={ri} className={ri % 2 === 1 ? "bg-slate-50/60" : ""}>
+                                {row.map((cell, ci) => (
+                                  <td key={ci} className="px-2 py-1.5 border border-slate-200 text-slate-700">
+                                    {String(cell)}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {tbl.rows.length > 15 && (
+                          <p className="text-[10px] text-slate-400 mt-1">
+                            Menampilkan 15 dari {tbl.rows.length} baris.
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Render Post Cards Inline (render_post_card) */}
+                {msg.postCards && msg.postCards.length > 0 && (
+                  <div className="mt-4 pt-3 border-t border-slate-100 space-y-3">
+                    {msg.postCards.map((pc, pi) => (
+                      <div key={pi} className="flex gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/60">
+                        {pc.thumbnailUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={pc.thumbnailUrl}
+                            alt={`Post @${pc.ownerUsername || "anonim"}`}
+                            referrerPolicy="no-referrer"
+                            className="w-20 h-20 object-cover rounded-lg flex-shrink-0 bg-slate-200"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="w-20 h-20 rounded-lg flex-shrink-0 bg-slate-200 flex items-center justify-center text-slate-400">
+                            <LayoutGrid className="w-6 h-6" />
+                          </div>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <p className="font-semibold text-slate-900 truncate">
+                            @{pc.ownerUsername || "anonim"}
+                          </p>
+                          {pc.captionText && (
+                            <p className="text-slate-600 line-clamp-3 mt-0.5">{pc.captionText}</p>
+                          )}
+                          <p className="text-[10px] text-slate-400 mt-1">
+                            {pc.likeCount != null ? `❤ ${pc.likeCount}` : ""}
+                            {pc.likeCount != null && pc.repostCount != null ? " · " : ""}
+                            {pc.repostCount != null ? `🔁 ${pc.repostCount} repost` : ""}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>

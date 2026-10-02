@@ -12,6 +12,7 @@ import { startScrapeLoop } from "./scrapeLoop";
 import { OllamaEmbeddingService } from "./ollamaClient";
 import { startEmbeddingLoop } from "./embeddingLoop";
 import { reclassifyHashtagTopics } from "./hashtagTopics";
+import { classifyPostTopics } from "./postTopics";
 
 const shouldStopRef = { stop: false };
 
@@ -39,6 +40,7 @@ export async function getActiveApifyService(): Promise<RepostApifyService | null
 }
 
 const HASHTAG_RECLASSIFY_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 jam
+const POST_TOPIC_CLASSIFY_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 jam
 
 /**
  * Menuntaskan backlog klasifikasi topik hashtag saat startup, lalu mengulang tiap 24 jam
@@ -56,6 +58,29 @@ async function startHashtagTopicLoop(shouldStopRef: { stop: boolean }) {
     const checkIntervalMs = 60_000;
     let waited = 0;
     while (waited < HASHTAG_RECLASSIFY_INTERVAL_MS && !shouldStopRef.stop) {
+      await new Promise((resolve) => setTimeout(resolve, checkIntervalMs));
+      waited += checkIntervalMs;
+    }
+  }
+}
+
+/**
+ * Menuntaskan backlog klasifikasi topik post (posts.topic_label) saat startup,
+ * lalu mengulang tiap 24 jam untuk menangkap post baru dari scraping berikutnya
+ * (PROMPT-CHATBOT-TOOLS-V2.md Task B).
+ */
+async function startPostTopicLoop(shouldStopRef: { stop: boolean }) {
+  console.log("[Worker] Memulai loop klasifikasi topik post...");
+  while (!shouldStopRef.stop) {
+    try {
+      await classifyPostTopics();
+    } catch (err) {
+      console.error("[Worker] Gagal menjalankan classifyPostTopics:", err);
+    }
+
+    const checkIntervalMs = 60_000;
+    let waited = 0;
+    while (waited < POST_TOPIC_CLASSIFY_INTERVAL_MS && !shouldStopRef.stop) {
       await new Promise((resolve) => setTimeout(resolve, checkIntervalMs));
       waited += checkIntervalMs;
     }
@@ -82,11 +107,13 @@ async function main() {
 
   const embeddingService = new OllamaEmbeddingService();
 
-  // Run scraping loop, embedding pipeline, and hashtag topic classification concurrently
+  // Run scraping loop, embedding pipeline, hashtag topic classification,
+  // and post topic classification concurrently
   await Promise.all([
     startScrapeLoop(getActiveApifyService, shouldStopRef),
     startEmbeddingLoop(embeddingService, shouldStopRef),
     startHashtagTopicLoop(shouldStopRef),
+    startPostTopicLoop(shouldStopRef),
   ]);
 }
 

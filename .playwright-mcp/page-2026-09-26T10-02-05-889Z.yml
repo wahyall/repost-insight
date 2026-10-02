@@ -1,0 +1,13 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - heading "Masuk ke RepostInsight" [level=1] [ref=e9]
+    - paragraph [ref=e10]: Akses analitik repost & riset personal followers Instagram
+  - generic [ref=e11]:
+    - generic [ref=e12]:
+      - text: Username
+      - textbox "wahyu" [ref=e18]
+    - generic [ref=e19]:
+      - text: Password
+      - textbox "••••••••" [active] [ref=e25]: admin123
+    - button "Masuk ke Sistem" [disabled] [ref=e26]
+  - generic [ref=e29]: Single-User Authentication Mode

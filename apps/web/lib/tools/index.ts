@@ -1,6 +1,68 @@
 import { prisma } from "@repostinsight/db";
 
 /**
+ * Ekstrak URL thumbnail dari rawJson post (dipakai render_post_card).
+ * Urutan kandidat sama seperti katalog repost (apps/web/app/api/reposts/route.ts).
+ */
+export function extractThumbnailUrl(rawJson: unknown): string | null {
+  if (!rawJson || typeof rawJson !== "object") return null;
+  const obj = rawJson as Record<string, unknown>;
+
+  if (typeof obj.thumbnail_url === "string") return obj.thumbnail_url;
+  if (typeof obj.display_url === "string") return obj.display_url;
+
+  const imageVersions = obj.image_versions2 as { candidates?: Array<{ url?: string }> } | undefined;
+  if (imageVersions?.candidates?.[0]?.url) {
+    return imageVersions.candidates[0].url;
+  }
+
+  const carouselMedia = obj.carousel_media as Array<{
+    image_versions2?: { candidates?: Array<{ url?: string }> };
+    display_url?: string;
+  }> | undefined;
+
+  if (carouselMedia?.[0]?.image_versions2?.candidates?.[0]?.url) {
+    return carouselMedia[0].image_versions2.candidates[0].url;
+  }
+  if (carouselMedia?.[0]?.display_url) {
+    return carouselMedia[0].display_url;
+  }
+
+  return null;
+}
+
+/**
+ * Panggil LLM chat 9Router untuk analisis teks (dipakai analyze_high_performing_hooks).
+ */
+export async function callChatLLM(prompt: string): Promise<string> {
+  const model = process.env.NINEROUTER_CHAT_MODEL || process.env.NINEROUTER_MODEL || "ag/gemini-3-flash";
+  const baseUrl = (process.env.NINEROUTER_BASE_URL || "http://127.0.0.1:20128/v1").replace(/\/$/, "");
+  const apiKey = process.env.NINEROUTER_API_KEY || "";
+  const endpoint = baseUrl.endsWith("/v1") ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model,
+      stream: false,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`9Router Chat API Error [${res.status}]: ${errText}`);
+  }
+
+  const data = await res.json();
+  return (data?.choices?.[0]?.message?.content ?? "").trim();
+}
+
+/**
  * Tool 1: Semantic Search via pgvector (FR-6.2)
  * Embeds user query and searches posts by cosine similarity
  */
@@ -102,6 +164,16 @@ export async function executeSemanticSearch(query: string, limit: number = 5) {
     reranked.sort((a, b) => b.combinedScore - a.combinedScore);
     const topPosts = reranked.slice(0, safeLimit);
 
+    // Ambil thumbnail untuk render_post_card (rawJson tidak ikut di GROUP BY di atas)
+    const thumbRows: Array<{ id: string; raw_json: unknown }> =
+      topPosts.length > 0
+        ? await prisma.$queryRawUnsafe(
+            `SELECT id, raw_json FROM posts WHERE id = ANY($1::text[])`,
+            topPosts.map((p) => p.id)
+          )
+        : [];
+    const thumbMap = new Map(thumbRows.map((r) => [r.id, extractThumbnailUrl(r.raw_json)]));
+
     return {
       source: "pgvector_semantic_search_reranked",
       queryNote: `Diurutkan: relevansi ${(SIMILARITY_WEIGHT * 100).toFixed(0)}% + kebaruan ${(RECENCY_WEIGHT * 100).toFixed(0)}%. repostCount = jumlah followers @ynsurabaya yang me-repost.`,
@@ -115,6 +187,7 @@ export async function executeSemanticSearch(query: string, limit: number = 5) {
         playCount: p.play_count,
         takenAt: p.taken_at ? new Date(p.taken_at).toISOString().split("T")[0] : null,
         visualDescription: p.visual_description ?? null,
+        thumbnailUrl: thumbMap.get(p.id) ?? null,
         repostCount: Number(p.repost_count),
         uniqueReposters: Number(p.unique_reposter_count),
         similarity: parseFloat(p.similarity.toFixed(3)),
@@ -335,66 +408,66 @@ export async function executeAnalyzeTopics(topN: number = 15) {
 }
 
 /**
- * Tool: Distribusi Topik (semantik, whole-database) — PROMPT-UPGRADE-CHATBOT.md item 7
- * Berbeda dari analyze_topics (per-hashtag literal): ini mengelompokkan hashtag jadi TOPIK
- * lewat tabel hashtag_topics (diisi worker via reclassifyHashtagTopics), akurat untuk
- * SELURUH database — bukan sampel semantic_search.
+ * Tool: Distribusi Topik (semantik, whole-database) — PROMPT-UPGRADE-CHATBOT.md item 7,
+ * diperbarui PROMPT-CHATBOT-TOOLS-V2.md Task B: sumber langsung posts.topic_label
+ * (mencakup post tanpa hashtag; tiap repost event dihitung tepat sekali).
  */
 export async function executeGetTopicDistribution(topN: number = 10) {
   const safeTopN = Math.max(1, Math.min(30, topN));
 
   const allRows: any[] = await prisma.$queryRawUnsafe(
-    `SELECT topic_label, usage_count, unique_reposters_count, unique_post_count
+    `SELECT topic_label, repost_event_count, unique_post_count, unique_reposters_count
      FROM mv_topic_distribution
-     ORDER BY usage_count DESC;`
+     ORDER BY repost_event_count DESC;`
   );
 
   if (allRows.length === 0) {
     return {
       source: "mv_topic_distribution",
-      note: "Belum ada topik terklasifikasi (worker belum selesai memproses backlog hashtag).",
+      note: "Belum ada topik terklasifikasi (worker belum selesai memproses backlog post).",
       totalTopicsFound: 0,
       topics: [],
     };
   }
 
-  const globalTotal = allRows.reduce((s, r) => s + Number(r.usage_count), 0) || 1;
+  const globalTotal = allRows.reduce((s, r) => s + Number(r.repost_event_count), 0) || 1;
   const topRows = allRows.slice(0, safeTopN);
 
-  // Cakupan: post tanpa hashtag, atau yang hashtag-nya belum diklasifikasikan ke
-  // hashtag_topics, tidak muncul di MV sama sekali. Tanpa angka ini, distribusi
-  // parsial bisa terbaca seolah-olah mewakili seluruh database.
-  const [coverageRows, totalRows] = await Promise.all([
+  // Cakupan: post yang topic_label-nya masih NULL tidak masuk MV.
+  const [classifiedRows, totalRows] = await Promise.all([
     prisma.$queryRawUnsafe<any[]>(
-      `SELECT COUNT(DISTINCT re.id)::int AS covered
-       FROM posts p
-       CROSS JOIN LATERAL unnest(p.hashtags) AS tag
-       JOIN hashtag_topics ht ON ht.hashtag = tag
-       JOIN repost_events re ON re.post_id = p.id;`
+      `SELECT COUNT(*)::int AS classified
+       FROM repost_events re JOIN posts p ON p.id = re.post_id
+       WHERE p.topic_label IS NOT NULL;`
     ),
     prisma.$queryRawUnsafe<any[]>(`SELECT COUNT(*)::int AS total FROM repost_events;`),
   ]);
-  const coveredReposts = Number(coverageRows[0]?.covered ?? 0);
-  const totalReposts = Number(totalRows[0]?.total ?? 0);
+  const classifiedRepostEvents = Number(classifiedRows[0]?.classified ?? 0);
+  const totalRepostEvents = Number(totalRows[0]?.total ?? 0);
   const coveragePct =
-    totalReposts > 0
-      ? parseFloat(((coveredReposts / totalReposts) * 100).toFixed(1))
+    totalRepostEvents > 0
+      ? parseFloat(((classifiedRepostEvents / totalRepostEvents) * 100).toFixed(1))
       : 0;
 
   return {
     source: "mv_topic_distribution",
-    note: "Distribusi TOPIK (kelompok semantik beberapa hashtag terkait), dihitung dari SELURUH bagian database yang sudah terklasifikasi — bukan sampel. percentageOfAll = proporsi dari total SEMUA topik terklasifikasi. coveragePct = persentase repost yang tercakup analisis ini (sisanya adalah post tanpa hashtag atau hashtag yang belum diklasifikasikan worker). JIKA coveragePct di bawah 90, WAJIB sebutkan angka cakupan itu di jawaban dan jangan mengklaim angkanya mewakili 100% database. Topik 'Lainnya' berisi hashtag generik/algoritmik (fyp, viral, reels, dst).",
+    note: "Distribusi TOPIK (kelompok semantik beberapa hashtag terkait maupun hasil klasifikasi isi konten), dihitung dari SELURUH bagian database yang sudah terklasifikasi — bukan sampel. percentageOfAll = proporsi dari total SEMUA topik terklasifikasi. Topik 'Lainnya' berisi hashtag generik/algoritmik (fyp, viral, reels, dst). Topik 'Tidak terklasifikasi' berisi post yang genuinely tanpa informasi (caption kosong, belum ada deskripsi visual).",
     totalTopicsFound: allRows.length,
     globalTotalUsage: globalTotal,
     coveragePct,
-    coveredRepostEvents: coveredReposts,
-    totalRepostEvents: totalReposts,
+    classifiedRepostEvents,
+    totalRepostEvents,
+    // Catatan cakupan hanya relevan kalau klasifikasi belum tuntas — sembunyikan jika >= 95%.
+    coverageNote:
+      coveragePct < 95
+        ? `Analisis mencakup ${coveragePct.toFixed(1)}% (${classifiedRepostEvents} dari ${totalRepostEvents} repost events) data yang sudah terklasifikasi topiknya.`
+        : undefined,
     topics: topRows.map((r) => ({
       topicLabel: r.topic_label,
-      occurrenceCount: Number(r.usage_count),
+      occurrenceCount: Number(r.repost_event_count),
       uniquePostCount: Number(r.unique_post_count),
       uniqueReposters: Number(r.unique_reposters_count),
-      percentageOfAll: parseFloat(((Number(r.usage_count) / globalTotal) * 100).toFixed(2)),
+      percentageOfAll: parseFloat(((Number(r.repost_event_count) / globalTotal) * 100).toFixed(2)),
     })),
   };
 }
@@ -427,12 +500,198 @@ export async function executeGetPostDetail(postId: string) {
     playCount: post.playCount,
     takenAt: post.takenAt ? post.takenAt.toISOString().split("T")[0] : null,
     visualDescription: post.visualDescription ?? null,
+    thumbnailUrl: extractThumbnailUrl(post.rawJson),
     commentSummary: null,
     topComments: [] as { text: string; likeCount: number }[],
     repostedBy: post.repostEvents.slice(0, 50).map((r) => r.followerUsername),
     repostedByTruncated: post.repostEvents.length > 50,
     repostCount: post.repostEvents.length,
   };
+}
+
+/**
+ * Tool A1: Klaster minat bersama — segmentasi follower berdasarkan topik yang
+ * PALING SERING mereka repost (dominant interest). Konteks riset komunitas /
+ * kolaborasi (programming event per-segmen minat), bukan analisis konten biasa.
+ */
+export async function executeGetSharedInterestClusters(minClusterSize: number = 3) {
+  const safeMin = Math.max(1, Math.min(50, Math.floor(minClusterSize) || 3));
+  const rows = await prisma.$queryRawUnsafe<any[]>(
+    `WITH follower_topic_counts AS (
+       SELECT re.follower_username, p.topic_label, COUNT(*)::int AS topic_count
+       FROM repost_events re
+       JOIN posts p ON p.id = re.post_id
+       WHERE p.topic_label IS NOT NULL AND p.topic_label != 'Lainnya'
+       GROUP BY re.follower_username, p.topic_label
+     ),
+     dominant_topic AS (
+       SELECT DISTINCT ON (follower_username) follower_username, topic_label, topic_count
+       FROM follower_topic_counts
+       ORDER BY follower_username, topic_count DESC
+     )
+     SELECT topic_label, COUNT(*)::int AS cluster_size,
+            array_agg(follower_username ORDER BY topic_count DESC) AS followers
+     FROM dominant_topic
+     GROUP BY topic_label
+     HAVING COUNT(*) >= $1
+     ORDER BY cluster_size DESC;`,
+    safeMin
+  );
+  return {
+    note: "Tiap follower dikelompokkan berdasarkan topik yang PALING SERING mereka repost",
+    clusters: rows.map((r) => ({
+      topic: r.topic_label,
+      clusterSize: Number(r.cluster_size),
+      sampleFollowers: (r.followers as string[]).slice(0, 20),
+    })),
+  };
+}
+
+/**
+ * Tool A2: Kandidat kolaborasi — akun original dengan audiens overlap tinggi ke
+ * followers suatu akun. Konteks riset komunitas/kolaborasi (co-host event),
+ * bukan analisis konten biasa.
+ */
+export async function executeSuggestCollaborationCandidates(ownerUsername: string, limit: number = 10) {
+  const safeLimit = Math.max(1, Math.min(20, Math.floor(limit) || 10));
+  const rows = await prisma.$queryRawUnsafe<any[]>(
+    `WITH target_followers AS (
+       SELECT DISTINCT re.follower_username
+       FROM repost_events re JOIN posts p ON p.id = re.post_id
+       WHERE p.owner_username = $1
+     )
+     SELECT p2.owner_username, COUNT(DISTINCT re2.follower_username)::int AS overlap_count
+     FROM repost_events re2
+     JOIN posts p2 ON p2.id = re2.post_id
+     WHERE re2.follower_username IN (SELECT follower_username FROM target_followers)
+       AND p2.owner_username != $1
+     GROUP BY p2.owner_username
+     ORDER BY overlap_count DESC LIMIT $2;`,
+    ownerUsername, safeLimit
+  );
+  const totalRows = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT COUNT(DISTINCT re.follower_username)::int AS total_target_followers
+     FROM repost_events re JOIN posts p ON p.id = re.post_id WHERE p.owner_username = $1;`,
+    ownerUsername
+  );
+  const totalTargetFollowers = Number(totalRows[0]?.total_target_followers ?? 0);
+  return {
+    targetOwner: ownerUsername,
+    totalTargetFollowers,
+    candidates: rows.map((r) => ({
+      ownerUsername: r.owner_username,
+      overlapCount: Number(r.overlap_count),
+      overlapRatio: totalTargetFollowers
+        ? parseFloat((Number(r.overlap_count) / totalTargetFollowers).toFixed(3))
+        : 0,
+    })),
+  };
+}
+
+/**
+ * Tool A3: Pola caption/hook dari post ber-engagement tertinggi (like_count).
+ */
+export async function executeAnalyzeHighPerformingHooks(sampleSize: number = 20) {
+  const safeSample = Math.max(1, Math.min(30, Math.floor(sampleSize) || 20));
+  const topPosts = await prisma.post.findMany({
+    orderBy: { likeCount: "desc" },
+    take: safeSample,
+    select: { captionText: true },
+  });
+  const captions = topPosts.filter((p) => p.captionText).map((p) => p.captionText as string);
+  if (!captions.length) return { sampleSize: 0, patterns: null };
+  const prompt = `Berikut caption dari ${captions.length} post engagement tertinggi:
+${captions.map((c, i) => `${i + 1}. ${c}`).join("\n")}
+Analisis pola yang sering muncul: gaya bukaan/hook, panjang rata-rata, emoji, call-to-action,
+nada bahasa. Rangkum 4-6 poin actionable untuk content creator.`;
+  return { sampleSize: captions.length, patterns: await callChatLLM(prompt) };
+}
+
+/**
+ * Tool A4: Follower yang sama-sama me-repost dari DUA akun original berbeda.
+ */
+export async function executeGetFollowerOverlap(ownerA: string, ownerB: string) {
+  const rows = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT re.follower_username FROM repost_events re JOIN posts p ON p.id = re.post_id
+     WHERE p.owner_username = $1
+     INTERSECT
+     SELECT re.follower_username FROM repost_events re JOIN posts p ON p.id = re.post_id
+     WHERE p.owner_username = $2;`,
+    ownerA, ownerB
+  );
+  return {
+    ownerA,
+    ownerB,
+    overlapCount: rows.length,
+    overlappingFollowers: rows.map((r) => r.follower_username).slice(0, 50),
+  };
+}
+
+/**
+ * Tool A5: Post lain yang mirip dengan satu post acuan (pakai embedding post itu
+ * sendiri sebagai query, bukan teks baru).
+ */
+export async function executeFindSimilarPosts(postId: string, limit: number = 5) {
+  const safeLimit = Math.max(1, Math.min(15, Math.floor(limit) || 5));
+  const rows = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT p2.id, p2.owner_username, p2.caption_text, p2.like_count, p2.raw_json,
+            (SELECT COUNT(*)::int FROM repost_events re WHERE re.post_id = p2.id) AS repost_count,
+            (p1.embedding <=> p2.embedding) AS distance
+     FROM posts p1, posts p2
+     WHERE p1.id = $1 AND p2.id != $1 AND p1.embedding IS NOT NULL AND p2.embedding IS NOT NULL
+     ORDER BY distance ASC LIMIT $2;`,
+    postId, safeLimit
+  );
+  return {
+    basedOnPostId: postId,
+    similarPosts: rows.map((r) => ({
+      id: r.id,
+      ownerUsername: r.owner_username,
+      captionText: r.caption_text,
+      likeCount: r.like_count,
+      repostCount: Number(r.repost_count ?? 0),
+      thumbnailUrl: extractThumbnailUrl(r.raw_json),
+      similarity: parseFloat((1 - Number(r.distance)).toFixed(3)),
+    })),
+  };
+}
+
+/**
+ * Tool A6: Hashtag yang sering muncul BERSAMAAN dengan satu hashtag acuan.
+ */
+export async function executeGetRelatedHashtags(hashtag: string, limit: number = 10) {
+  const safeLimit = Math.max(1, Math.min(20, Math.floor(limit) || 10));
+  const rows = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT tag2 AS related_tag, COUNT(*)::int AS co_occurrence_count
+     FROM posts p CROSS JOIN LATERAL unnest(p.hashtags) AS tag1
+     CROSS JOIN LATERAL unnest(p.hashtags) AS tag2
+     WHERE tag1 = $1 AND tag2 != $1
+     GROUP BY tag2 ORDER BY co_occurrence_count DESC LIMIT $2;`,
+    hashtag, safeLimit
+  );
+  return {
+    hashtag,
+    relatedHashtags: rows.map((r) => ({ tag: r.related_tag, count: Number(r.co_occurrence_count) })),
+  };
+}
+
+/**
+ * Tool A7-A8: Formatter murni (pola yang sama seperti render_chart) — tidak query
+ * DB, hanya membentuk ulang data dari tool lain jadi komponen visual.
+ */
+export function executeRenderPostCard(post: {
+  id: string;
+  thumbnailUrl?: string;
+  captionText?: string;
+  ownerUsername?: string;
+  likeCount?: number;
+  repostCount?: number;
+}) {
+  return { isPostCard: true, ...post };
+}
+
+export function executeRenderTable(headers: string[], rows: (string | number)[][]) {
+  return { isTable: true, headers, rows };
 }
 
 /**
@@ -586,6 +845,147 @@ export const CHATBOT_TOOLS = [
           },
         },
         required: ["postId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_shared_interest_clusters",
+      description:
+        "Segmentasi follower berdasarkan topik yang PALING SERING mereka repost (dominant interest) — tiap follower masuk ke satu klaster sesuai topik dominannya. Tool konteks RISET KOMUNITAS/KOLABORASI (misal programming event per-segmen minat, memetakan ceruk audiens), bukan analisis konten biasa. Jangan pakai untuk pertanyaan distribusi topik keseluruhan (pakai get_topic_distribution untuk itu).",
+      parameters: {
+        type: "object",
+        properties: {
+          minClusterSize: {
+            type: "number",
+            description: "Ukuran klaster minimum agar ditampilkan (default 3)",
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "suggest_collaboration_candidates",
+      description:
+        "Mencari akun original lain yang audiensnya paling beririsan (overlap) dengan followers suatu akun — kandidat kolaborasi/co-host event. Tool konteks RISET KOMUNITAS/KOLABORASI, bukan analisis konten biasa. Gunakan untuk pertanyaan seperti 'akun apa yang cocok diajak kolaborasi dengan akun X'.",
+      parameters: {
+        type: "object",
+        properties: {
+          ownerUsername: {
+            type: "string",
+            description: "Username akun original acuan (tanpa @)",
+          },
+          limit: {
+            type: "number",
+            description: "Jumlah kandidat (default 10, maks 20)",
+          },
+        },
+        required: ["ownerUsername"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "analyze_high_performing_hooks",
+      description:
+        "Menganalisis pola caption/hook (gaya bukaan, panjang, emoji, call-to-action, nada bahasa) dari post ber-engagement (like) tertinggi — menghasilkan 4-6 poin actionable untuk content creator. Gunakan untuk pertanyaan seperti 'gaya caption seperti apa yang paling works' atau 'bikinkan panduan hook dari konten terbaik'.",
+      parameters: {
+        type: "object",
+        properties: {
+          sampleSize: {
+            type: "number",
+            description: "Jumlah post teratas yang dianalisis (default 20, maks 30)",
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_follower_overlap",
+      description: "Mencari follower yang sama-sama me-repost dari DUA akun original berbeda — menunjukkan irisan minat audiens antara dua akun. Gunakan untuk pertanyaan seperti 'follower mana yang suka X dan Y sekaligus'.",
+      parameters: {
+        type: "object",
+        properties: {
+          ownerA: { type: "string", description: "Username akun original pertama" },
+          ownerB: { type: "string", description: "Username akun original kedua" },
+        },
+        required: ["ownerA", "ownerB"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "find_similar_posts",
+      description: "Mencari post lain yang MIRIP secara konten dengan satu post tertentu (pakai embedding post itu sendiri, bukan kata kunci baru). Gunakan setelah menemukan satu post menarik lewat semantic_search/get_post_detail dan user ingin melihat post serupa lainnya.",
+      parameters: {
+        type: "object",
+        properties: {
+          postId: { type: "string", description: "ID post yang jadi acuan kemiripan" },
+          limit: { type: "number", description: "Jumlah post serupa (default 5, maks 15)" },
+        },
+        required: ["postId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_related_hashtags",
+      description: "Mencari hashtag yang sering muncul BERSAMAAN dengan satu hashtag tertentu dalam post yang sama — membantu memetakan cluster topik di sekitar satu hashtag. BUKAN untuk mencari topik dominan keseluruhan (pakai get_topic_distribution untuk itu).",
+      parameters: {
+        type: "object",
+        properties: {
+          hashtag: { type: "string", description: "Hashtag acuan (tanpa tanda #)" },
+          limit: { type: "number", description: "Jumlah hashtag terkait (default 10, maks 20)" },
+        },
+        required: ["hashtag"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "render_post_card",
+      description: "Menampilkan satu post sebagai kartu visual (thumbnail, caption, statistik) inline di chat. Data HARUS berasal dari hasil semantic_search/get_post_detail/find_similar_posts — JANGAN mengarang data post.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          thumbnailUrl: { type: "string" },
+          captionText: { type: "string" },
+          ownerUsername: { type: "string" },
+          likeCount: { type: "number" },
+          repostCount: { type: "number" },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "render_table",
+      description: "Menampilkan data sebagai tabel terstruktur di chat — dipakai saat data dari tool lain lebih mudah dipahami sebagai tabel dibanding teks biasa (misal perbandingan multi-kolom). Data HARUS berasal dari hasil tool lain, JANGAN mengarang.",
+      parameters: {
+        type: "object",
+        properties: {
+          headers: { type: "array", items: { type: "string" }, description: "Judul kolom" },
+          rows: {
+            type: "array",
+            items: { type: "array", items: { type: ["string", "number"] } },
+            description: "Baris data, tiap baris array nilai sejumlah kolom sesuai headers",
+          },
+        },
+        required: ["headers", "rows"],
       },
     },
   },

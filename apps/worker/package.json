@@ -5,7 +5,8 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "reclassify-hashtags": "tsx src/reclassifyOnce.ts"
+    "reclassify-hashtags": "tsx src/reclassifyOnce.ts",
+    "classify-post-topics": "tsx src/classifyOnce.ts"
   },
   "dependencies": {
     "@repostinsight/db": "*",

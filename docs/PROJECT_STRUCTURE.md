@@ -136,9 +136,11 @@ model Post {
   firstSeenAt     DateTime                     @default(now()) @map("first_seen_at") @db.Timestamptz(3)
   lastUpdatedAt   DateTime                     @default(now()) @updatedAt @map("last_updated_at") @db.Timestamptz(3)
   embedding       Unsupported("vector(1024)")?
+  topicLabel      String?                      @map("topic_label") // NULL = belum diklasifikasi (PROMPT-CHATBOT-TOOLS-V2.md Task B)
   repostEvents    RepostEvent[]
 
   @@index([embeddingStatus])
+  @@index([topicLabel])
   @@map("posts")
 }
 

@@ -153,6 +153,7 @@ CREATE TABLE posts (
   last_updated_at   timestamptz NOT NULL DEFAULT now(),
   visual_description        text,               -- lihat VISUAL_DESCRIPTION.md (F10)
   visual_description_status text NOT NULL DEFAULT 'pending' -- pending/done/failed/skipped
+  topic_label               text                -- NULL = belum diklasifikasi; diisi worker via classifyPostTopics (jalur cepat hashtag-mapping atau fallback klasifikasi isi konten), lihat docs/PROMPT-CHATBOT-TOOLS-V2.md Task B
 );
 
 -- Relasi many-to-many: follower mana me-repost post apa
