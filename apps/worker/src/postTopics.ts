@@ -68,7 +68,7 @@ topic_label = "Tidak terklasifikasi" — jangan dipaksakan mengarang topik. Jawa
 [{"id":"...","topic_label":"..."}]`;
 }
 
-async function refreshTopicDistributionView(): Promise<void> {
+export async function refreshTopicDistributionView(): Promise<void> {
   try {
     await prisma.$executeRawUnsafe(`REFRESH MATERIALIZED VIEW CONCURRENTLY mv_topic_distribution;`);
   } catch {
@@ -96,64 +96,87 @@ export async function classifyPostTopics(): Promise<void> {
   const hashtagTopicCache = await getHashtagTopicMap();
   let totalClassified = 0;
 
-  while (true) {
-    const batch = await prisma.post.findMany({
-      where: { topicLabel: null },
-      take: POST_BATCH_SIZE,
-      select: { id: true, hashtags: true, captionText: true, visualDescription: true },
-    });
-    if (batch.length === 0) break;
+  try {
+    while (true) {
+      const batch = await prisma.post.findMany({
+        where: { topicLabel: null },
+        take: POST_BATCH_SIZE,
+        select: { id: true, hashtags: true, captionText: true, visualDescription: true },
+      });
+      if (batch.length === 0) break;
 
-    const fastLane: { id: string; topicLabel: string }[] = [];
-    const needsContentClassification: typeof batch = [];
+      const fastLane: { id: string; topicLabel: string }[] = [];
+      const needsContentClassification: typeof batch = [];
 
-    for (const post of batch) {
-      const mapped = (post.hashtags ?? [])
-        .map((h) => hashtagTopicCache.get(h))
-        .find((t) => t && t !== "Lainnya");
-      if (mapped) fastLane.push({ id: post.id, topicLabel: mapped });
-      else needsContentClassification.push(post);
-    }
+      for (const post of batch) {
+        const mapped = (post.hashtags ?? [])
+          .map((h) => hashtagTopicCache.get(h))
+          .find((t) => t && t !== "Lainnya");
+        if (mapped) fastLane.push({ id: post.id, topicLabel: mapped });
+        else needsContentClassification.push(post);
+      }
 
-    try {
-      await Promise.all(
-        fastLane.map((f) =>
-          prisma.post.update({ where: { id: f.id }, data: { topicLabel: f.topicLabel } })
-        )
-      );
-      totalClassified += fastLane.length;
-
-      if (needsContentClassification.length) {
-        const raw = await callChatCompletion(
-          buildContentClassificationPrompt(existingTopics, needsContentClassification)
-        );
-        const parsed = parseContentClassificationResponse(raw);
-        const validIds = new Set(needsContentClassification.map((p) => p.id));
-        const valid = parsed.filter((p) => validIds.has(p.id));
+      try {
         await Promise.all(
-          valid.map((p) =>
-            prisma.post.update({ where: { id: p.id }, data: { topicLabel: p.topic_label } })
+          fastLane.map((f) =>
+            prisma.post.update({ where: { id: f.id }, data: { topicLabel: f.topicLabel } })
           )
         );
-        totalClassified += valid.length;
-        existingTopics = [...new Set([...existingTopics, ...valid.map((p) => p.topic_label)])];
-        if (valid.length < needsContentClassification.length) {
-          console.warn(
-            `[PostTopics] ${needsContentClassification.length - valid.length} post tidak terklasifikasi LLM di batch ini (tetap NULL, dicoba lagi siklus berikutnya).`
+        totalClassified += fastLane.length;
+
+        if (needsContentClassification.length) {
+          // Identifikasi post yang benar-benar tanpa informasi
+          const emptyInfoPosts = needsContentClassification.filter(
+            (p) => (!p.captionText || !p.captionText.trim()) && (!p.visualDescription || !p.visualDescription.trim())
           );
+          const hasInfoPosts = needsContentClassification.filter(
+            (p) => (p.captionText && p.captionText.trim()) || (p.visualDescription && p.visualDescription.trim())
+          );
+
+          if (emptyInfoPosts.length > 0) {
+            await Promise.all(
+              emptyInfoPosts.map((p) =>
+                prisma.post.update({ where: { id: p.id }, data: { topicLabel: "Tidak terklasifikasi" } })
+              )
+            );
+            totalClassified += emptyInfoPosts.length;
+          }
+
+          if (hasInfoPosts.length > 0) {
+            const raw = await callChatCompletion(
+              buildContentClassificationPrompt(existingTopics, hasInfoPosts)
+            );
+            const parsed = parseContentClassificationResponse(raw);
+            const validIds = new Set(hasInfoPosts.map((p) => p.id));
+            const valid = parsed.filter((p) => validIds.has(p.id));
+            await Promise.all(
+              valid.map((p) =>
+                prisma.post.update({ where: { id: p.id }, data: { topicLabel: p.topic_label } })
+              )
+            );
+            totalClassified += valid.length;
+            existingTopics = [...new Set([...existingTopics, ...valid.map((p) => p.topic_label)])];
+            if (valid.length < hasInfoPosts.length) {
+              console.warn(
+                `[PostTopics] ${hasInfoPosts.length - valid.length} post tidak terklasifikasi LLM di batch ini (tetap NULL, dicoba lagi siklus berikutnya).`
+              );
+              break;
+            }
+          }
         }
+      } catch (err) {
+        console.error(
+          "[PostTopics] Gagal mengklasifikasi batch, akan dicoba lagi di siklus berikutnya:",
+          err
+        );
+        break;
       }
-    } catch (err) {
-      console.error(
-        "[PostTopics] Gagal mengklasifikasi batch, akan dicoba lagi di siklus berikutnya:",
-        err
-      );
-      break;
+
+      await sleep(BATCH_DELAY_MS);
     }
-
-    await sleep(BATCH_DELAY_MS);
+  } finally {
+    console.log(`[PostTopics] Selesai — ${totalClassified} post terklasifikasi sesi ini.`);
+    await refreshTopicDistributionView();
   }
-
-  console.log(`[PostTopics] Selesai — ${totalClassified} post terklasifikasi sesi ini.`);
-  await refreshTopicDistributionView();
 }
+

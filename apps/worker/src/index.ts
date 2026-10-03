@@ -12,7 +12,7 @@ import { startScrapeLoop } from "./scrapeLoop";
 import { OllamaEmbeddingService } from "./ollamaClient";
 import { startEmbeddingLoop } from "./embeddingLoop";
 import { reclassifyHashtagTopics } from "./hashtagTopics";
-import { classifyPostTopics } from "./postTopics";
+import { classifyPostTopics, refreshTopicDistributionView } from "./postTopics";
 import { startCommentScrapeLoop } from "./commentLoop";
 
 const shouldStopRef = { stop: false };
@@ -41,7 +41,8 @@ export async function getActiveApifyService(): Promise<RepostApifyService | null
 }
 
 const HASHTAG_RECLASSIFY_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 jam
-const POST_TOPIC_CLASSIFY_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 jam
+const POST_TOPIC_CLASSIFY_INTERVAL_MS = 15 * 60 * 1000; // 15 menit (berkala agar backlog terkejar)
+const VIEW_REFRESH_INTERVAL_MS = 15 * 60 * 1000; // 15 menit (safety net independen)
 
 /**
  * Menuntaskan backlog klasifikasi topik hashtag saat startup, lalu mengulang tiap 24 jam
@@ -67,7 +68,7 @@ async function startHashtagTopicLoop(shouldStopRef: { stop: boolean }) {
 
 /**
  * Menuntaskan backlog klasifikasi topik post (posts.topic_label) saat startup,
- * lalu mengulang tiap 24 jam untuk menangkap post baru dari scraping berikutnya
+ * lalu mengulang berkala (tiap 15 menit) untuk menangkap post baru dari scraping berikutnya
  * (PROMPT-CHATBOT-TOOLS-V2.md Task B).
  */
 async function startPostTopicLoop(shouldStopRef: { stop: boolean }) {
@@ -79,9 +80,32 @@ async function startPostTopicLoop(shouldStopRef: { stop: boolean }) {
       console.error("[Worker] Gagal menjalankan classifyPostTopics:", err);
     }
 
-    const checkIntervalMs = 60_000;
+    const checkIntervalMs = 10_000;
     let waited = 0;
     while (waited < POST_TOPIC_CLASSIFY_INTERVAL_MS && !shouldStopRef.stop) {
+      await new Promise((resolve) => setTimeout(resolve, checkIntervalMs));
+      waited += checkIntervalMs;
+    }
+  }
+}
+
+/**
+ * Safety net: me-refresh mv_topic_distribution berkala secara independen
+ * terlepas dari logic klasifikasi, menjaga view tidak pernah stale.
+ */
+async function startViewRefreshLoop(shouldStopRef: { stop: boolean }) {
+  console.log("[Worker] Memulai loop refresh materialized view independen (setiap 15 menit)...");
+  while (!shouldStopRef.stop) {
+    try {
+      await refreshTopicDistributionView();
+      console.log("[Worker] mv_topic_distribution berhasil di-refresh (periodic safety net).");
+    } catch (err) {
+      console.warn("[Worker] Gagal merefresh mv_topic_distribution:", err);
+    }
+
+    const checkIntervalMs = 10_000;
+    let waited = 0;
+    while (waited < VIEW_REFRESH_INTERVAL_MS && !shouldStopRef.stop) {
       await new Promise((resolve) => setTimeout(resolve, checkIntervalMs));
       waited += checkIntervalMs;
     }
@@ -109,12 +133,13 @@ async function main() {
   const embeddingService = new OllamaEmbeddingService();
 
   // Run scraping loop, embedding pipeline, hashtag topic classification,
-  // post topic classification, and optionally comment scraper loop
+  // post topic classification, scheduled view refresh, and optionally comment scraper loop
   const workers: Promise<void>[] = [
     startScrapeLoop(getActiveApifyService, shouldStopRef),
     startEmbeddingLoop(embeddingService, shouldStopRef),
     startHashtagTopicLoop(shouldStopRef),
     startPostTopicLoop(shouldStopRef),
+    startViewRefreshLoop(shouldStopRef),
   ];
 
   if (process.env.ENABLE_COMMENT_WORKER === "true") {
